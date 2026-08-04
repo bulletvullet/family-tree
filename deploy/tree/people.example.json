@@ -1,0 +1,50 @@
+[
+  {
+    "id": "demo1",
+    "lastName": "Иванов",
+    "maidenName": "",
+    "firstName": "Иван",
+    "middleName": "Петрович",
+    "birthDate": "11-06-1978",
+    "deathDate": "",
+    "gender": "М",
+    "focus": true,
+    "parents": ["demo2", "demo3"]
+  },
+  {
+    "id": "demo2",
+    "lastName": "Иванов",
+    "maidenName": "",
+    "firstName": "Пётр",
+    "middleName": "Семёнович",
+    "birthDate": "1949",
+    "deathDate": "",
+    "gender": "М",
+    "focus": false,
+    "parents": ["demo4"]
+  },
+  {
+    "id": "demo3",
+    "lastName": "Иванова",
+    "maidenName": "Сидорова",
+    "firstName": "Мария",
+    "middleName": "Ивановна",
+    "birthDate": "1952",
+    "deathDate": "",
+    "gender": "Ж",
+    "focus": false,
+    "parents": []
+  },
+  {
+    "id": "demo4",
+    "lastName": "Иванов",
+    "maidenName": "",
+    "firstName": "Семён",
+    "middleName": "",
+    "birthDate": "1920",
+    "deathDate": "1995",
+    "gender": "М",
+    "focus": false,
+    "parents": []
+  }
+]

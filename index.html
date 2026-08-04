@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Семейное древо</title>
+<link rel="stylesheet" href="styles.css?v=14">
+</head>
+<body>
+<div class="app">
+
+  <!-- ЛЕВАЯ ПАНЕЛЬ -->
+  <section class="left">
+
+    <!-- Форма создания / редактирования -->
+    <div class="card form-card">
+      <h2 id="formTitle">Новый человек</h2>
+      <form id="personForm" autocomplete="off">
+        <div class="field-row">
+          <label>Фамилия
+            <input type="text" id="lastName" placeholder="Иванов">
+          </label>
+          <label><span>Девичья фамилия <span class="hint">(если есть)</span></span>
+            <input type="text" id="maidenName" placeholder="Петрова">
+          </label>
+          <label>Имя
+            <input type="text" id="firstName" placeholder="Иван">
+          </label>
+          <label>Отчество
+            <input type="text" id="middleName" placeholder="Иванович">
+          </label>
+        </div>
+        <div class="field-row">
+          <label><span>Дата рождения <span class="hint">(если есть)</span></span>
+            <div class="date-parts">
+              <input type="text" id="birthDay" placeholder="ДД" inputmode="numeric" maxlength="2">
+              <input type="text" id="birthMonth" placeholder="ММ" inputmode="numeric" maxlength="2">
+              <input type="text" id="birthYear" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
+            </div>
+          </label>
+          <label><span>Дата смерти <span class="hint">(если есть)</span></span>
+            <div class="date-parts">
+              <input type="text" id="deathDay" placeholder="ДД" inputmode="numeric" maxlength="2">
+              <input type="text" id="deathMonth" placeholder="ММ" inputmode="numeric" maxlength="2">
+              <input type="text" id="deathYear" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
+            </div>
+          </label>
+        </div>
+        <div class="field-row">
+          <label>Родственник
+            <select id="relativeSelect">
+              <option value="">— не выбран —</option>
+            </select>
+          </label>
+          <label>Он(а) приходится
+            <select id="relationSelect">
+              <option value="father">папа</option>
+              <option value="mother">мама</option>
+              <option value="son">сын</option>
+              <option value="daughter">дочь</option>
+            </select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label><span>Родственник 2 <span class="hint">(необязательно)</span></span>
+            <select id="relativeSelect2">
+              <option value="">— не выбран —</option>
+            </select>
+          </label>
+          <label>Он(а) приходится
+            <select id="relationSelect2">
+              <option value="mother">мама</option>
+              <option value="father">папа</option>
+              <option value="son">сын</option>
+              <option value="daughter">дочь</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="relativesBox" class="relatives-box hidden">
+          <div class="relatives-title">Текущие связи:</div>
+          <div id="relativesChips" class="relatives-chips"></div>
+        </div>
+
+        <div id="formError" class="form-error hidden"></div>
+
+        <div class="form-actions">
+          <button type="submit" id="submitBtn" class="btn btn-primary">Добавить</button>
+          <button type="button" id="cancelBtn" class="btn btn-ghost hidden">Отмена</button>
+          <label class="switch-label">
+            <input type="checkbox" id="focusToggle" class="switch-input">
+            <span class="switch-slider"></span>
+            Фокус
+          </label>
+        </div>
+      </form>
+    </div>
+
+    <!-- Список людей -->
+    <div class="card list-card">
+      <h2>Все люди <span id="peopleCount" class="counter"></span></h2>
+      <div class="table-wrap">
+        <table id="peopleTable">
+          <thead>
+            <tr>
+              <th data-key="lastName" class="sortable">Фамилия <span class="arrow"></span></th>
+              <th>Девичья</th>
+              <th data-key="firstName" class="sortable">Имя <span class="arrow"></span></th>
+              <th>Отчество</th>
+              <th>Пол</th>
+              <th data-key="birthDate" class="sortable">Рождение <span class="arrow"></span></th>
+              <th data-key="deathDate" class="sortable">Смерть <span class="arrow"></span></th>
+              <th>Статус</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="peopleTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ПРАВАЯ ПАНЕЛЬ: дерево -->
+  <section class="right">
+    <button id="collapseTab" class="collapse-tab" title="Скрыть панель">‹</button>
+    <div class="card tree-card">
+      <div class="tree-toolbar">
+        <h2>Древо</h2>
+        <div class="tree-controls">
+          <button id="zoomOut" class="btn btn-tool" title="Отдалить">−</button>
+          <button id="zoomIn" class="btn btn-tool" title="Приблизить">+</button>
+          <button id="fitView" class="btn btn-tool" title="Вписать">⤢</button>
+        </div>
+      </div>
+      <div class="tree-viewport" id="treeViewport">
+        <div id="tree3d"></div>
+        <div id="treeEmpty" class="tree-empty">Добавьте первого человека в форме слева</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+<div id="serverWarning" class="server-warning hidden">
+  Нет связи с сервером БД — запустите <code>start.command</code> в папке сайта.
+  Пока данные сохраняются только в браузере!
+</div>
+<script src="vendor/graph-bundle.js"></script>
+<script src="app.js?v=24"></script>
+</body>
+</html>
