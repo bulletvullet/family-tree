@@ -2,6 +2,8 @@
 __pycache__/
 server.log
 
-# персональные данные семьи — в репозиторий не попадают
+# personal family data, never committed
 data/
-deploy/tree/people.json
+backups/
+.test-data/
+deploy/tree/tree.json

@@ -1,21 +1,52 @@
 /* ============================================================
-   Семейное древо — логика приложения
-   Данные: localStorage, ключ familyTree.people.v1
-   Человек: { id, lastName, maidenName, firstName, middleName,
-              birthDate, deathDate, gender, focus, parents: [id, ...] }
-   Даты — строки 'ГГГГ' | 'ММ-ГГГГ' | 'ДД-ММ-ГГГГ' (бывают неполные)
+   Family tree: application logic
+   Data: localStorage, key familyTree.people.v1
+   Person: { id, lastName, maidenName, firstName, middleName,
+             birthDate, deathDate, gender, focus, parents: [id, ...] }
+   Dates are strings 'YYYY' | 'MM-YYYY' | 'DD-MM-YYYY' (may be partial)
+
+   Interface text and kinship words live in i18n.js. Kinship is never
+   built as text here: this file produces descriptors and I18n.renderTerm
+   turns them into words in the language the user picked.
    ============================================================ */
 
 'use strict';
 
-const STORAGE_KEY = 'familyTree.people.v1';      // резервная копия в браузере
-const MIGRATED_KEY = 'familyTree.migrated.v1';   // флаг «перенесено в SQLite»
-const API_URL = 'http://localhost:8791/api/people';
+const { t, renderTerm } = window.I18n;
 
-/* ---------- состояние ---------- */
+const STORAGE_KEY = 'familyTree.tree.v2';        // backup copy in the browser
+const LEGACY_KEY = 'familyTree.people.v1';       // v1 held a bare array of people
+const VIEW_KEY = 'familyTree.view.v1';           // 'graph' or 'tree'
+// Must match SCHEMA in server.py. A server on older code answers requests
+// normally and silently discards fields it does not know, so a mismatch is
+// treated as a fault rather than shrugged off.
+const NEEDS_SCHEMA = 1;
+const MIGRATED_KEY = 'familyTree.migrated.v1';   // flag: migrated to SQLite
+// Talk to the server that served this page, so an instance started on another
+// port with its own database is self-contained. Only a page opened straight
+// from disk (file://) has no usable origin and falls back to the default port.
+const API_URL = location.protocol.startsWith('http')
+  ? `${location.origin}/api/tree`
+  : 'http://localhost:8791/api/tree';
+
+/* ---------- state ---------- */
 let people = [];
+// One entry per marriage: { id, a, b, status } with status 'married' | 'divorced'.
+// The pair is unordered, and a person may appear in several of them.
+let marriages = [];
+// 'graph' lets the physics place everyone freely. 'tree' pins each person to
+// the height of their generation, so the layout reads like a family tree.
+let viewMode = (() => {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'graph';
+  } catch {
+    return 'graph';
+  }
+})();
 let useServer = false;
+let serverStale = false;   // server answering, but on older code
 let editingId = null;
+let openMarriageId = null;   // marriage whose details are on screen
 let sortState = { key: 'lastName', dir: 1 }; // dir: 1 = A-Z, -1 = Z-A
 let selectedId = null;
 
@@ -26,6 +57,8 @@ const lastNameEl = $('lastName');
 const maidenNameEl = $('maidenName');
 const firstNameEl = $('firstName');
 const middleNameEl = $('middleName');
+const birthPlaceEl = $('birthPlace');
+const notesEl = $('notes');
 const birthDayEl = $('birthDay');
 const birthMonthEl = $('birthMonth');
 const birthYearEl = $('birthYear');
@@ -43,50 +76,97 @@ const cancelBtn = $('cancelBtn');
 const focusToggle = $('focusToggle');
 const relativesBox = $('relativesBox');
 const relativesChips = $('relativesChips');
+const marriageBox = $('marriageBox');
+const marriageWho = $('marriageWho');
+const marDayEl = $('marDay');
+const marMonthEl = $('marMonth');
+const marYearEl = $('marYear');
+const marPlaceEl = $('marPlace');
+const divDayEl = $('divDay');
+const divMonthEl = $('divMonth');
+const divYearEl = $('divYear');
 const tbody = $('peopleTbody');
 const peopleCount = $('peopleCount');
 const tree3d = $('tree3d');
 const treeEmpty = $('treeEmpty');
 const treeViewport = $('treeViewport');
 const serverWarning = $('serverWarning');
+const langToggle = $('langToggle');
+const viewToggle = $('viewToggle');
+const treeChart = $('treeChart');
 
 /* ============================================================
-   Хранилище: основное — SQLite на локальном сервере (server.py),
-   плюс резервная копия в localStorage браузера.
+   Storage: SQLite on the local server (server.py) is the primary store,
+   with a backup copy in the browser localStorage.
    ============================================================ */
+// Reads the browser backup. v1 stored a bare array of people with no
+// marriages, so an older backup is accepted and lifted into the new shape.
 function loadLocal() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
+    if (raw) {
+      const doc = JSON.parse(raw);
+      if (doc && Array.isArray(doc.people)) {
+        return { people: doc.people, marriages: Array.isArray(doc.marriages) ? doc.marriages : [] };
+      }
+    }
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || 'null');
+    if (Array.isArray(legacy)) return { people: legacy, marriages: [] };
   } catch {
-    return [];
+    // unreadable backup is the same as no backup
   }
+  return { people: [], marriages: [] };
 }
 
 function saveLocal() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(people));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ people, marriages }));
 }
 
-function showServerWarning() {
+// null when all is well, otherwise which fault to report.
+let banner = null;
+
+const BANNERS = {
+  offline: { key: 'server.warning', cmd: 'start.command' },
+  stale: { key: 'server.stale', cmd: 'make run' },
+};
+
+function renderBanner() {
+  if (!banner) {
+    serverWarning.classList.add('hidden');
+    return;
+  }
+  // the message names a command inside <code>, so build it from nodes
+  const { key, cmd } = BANNERS[banner];
+  const [before, after] = t(key).split('{cmd}');
+  const code = document.createElement('code');
+  code.textContent = cmd;
+  serverWarning.textContent = '';
+  serverWarning.append(before || '', code, after || '');
   serverWarning.classList.remove('hidden');
 }
-function hideServerWarning() {
-  serverWarning.classList.add('hidden');
+
+function setBanner(next) {
+  banner = next;
+  renderBanner();
 }
 
-async function loadPeople() {
+async function loadTree() {
   try {
     const r = await fetch(API_URL);
     if (!r.ok) throw new Error('bad status');
-    const arr = await r.json();
+    const doc = await r.json();
     useServer = true;
-    hideServerWarning();
-    return Array.isArray(arr) ? arr : [];
+    // A server with no schema at all predates the field, so it is older too.
+    serverStale = (doc.schema || 0) < NEEDS_SCHEMA;
+    setBanner(serverStale ? 'stale' : null);
+    return {
+      people: Array.isArray(doc.people) ? doc.people : [],
+      marriages: Array.isArray(doc.marriages) ? doc.marriages : [],
+    };
   } catch {
     useServer = false;
-    showServerWarning();
-    return loadLocal(); // fallback, чтобы хотя бы не потерять данные
+    setBanner('offline');
+    return loadLocal(); // fallback so the data is not lost
   }
 }
 
@@ -94,34 +174,41 @@ async function saveToServer() {
   const r = await fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(people),
+    body: JSON.stringify({ people, marriages }),
   });
   if (!r.ok) throw new Error('save failed');
 }
 
 function save() {
-  saveLocal(); // резервная копия в браузере — всегда
+  saveLocal(); // browser backup, always, and it keeps every field
   saveToServer()
-    .then(() => { useServer = true; hideServerWarning(); })
-    .catch(() => { useServer = false; showServerWarning(); });
+    .then(() => {
+      useServer = true;
+      // A stale server accepts the write, so success here says nothing about
+      // whether the newer fields survived. Keep warning.
+      setBanner(serverStale ? 'stale' : null);
+    })
+    .catch(() => { useServer = false; setBanner('offline'); });
 }
 
-// Загрузка при старте + одноразовая миграция localStorage -> SQLite
+// Startup load plus a one-time localStorage -> SQLite migration
 async function boot() {
-  people = await loadPeople();
+  ({ people, marriages } = await loadTree());
   if (useServer && people.length === 0 && !localStorage.getItem(MIGRATED_KEY)) {
     const legacy = loadLocal();
-    if (legacy.length) {
-      people = legacy;
+    if (legacy.people.length) {
+      people = legacy.people;
+      marriages = legacy.marriages;
       try {
-        await saveToServer(); // переносим в SQLite, ничего не теряя
+        await saveToServer(); // move into SQLite without losing anything
       } catch {
-        showServerWarning();
+        setBanner('offline');
       }
     }
     localStorage.setItem(MIGRATED_KEY, '1');
   }
-  // заполнить пол тем, у кого его ещё нет (вывод из отчества/имени)
+  marriages = marriages.filter((m) => byId(m.a) && byId(m.b) && m.a !== m.b);
+  // fill in gender where it is missing (inferred from patronymic or first name)
   let genderFilled = false;
   for (const p of people) {
     if (!p.gender) {
@@ -130,6 +217,10 @@ async function boot() {
     }
   }
   if (genderFilled) save();
+  I18n.applyStatic();
+  renderLangButton();
+  renderViewButton();
+  renderFormChrome();
   renderAll();
 }
 
@@ -141,42 +232,43 @@ function byId(id) {
   return people.find((p) => p.id === id) || null;
 }
 
-// Фокус может быть только у одного человека:
-// при установке снимаем его со всех остальных
+// Only one person can hold focus:
+// setting it clears the flag on everyone else
 function setFocus(id, on) {
   for (const p of people) p.focus = on && p.id === id;
 }
 
 /* ============================================================
-   Даты: отдельные поля ДД / ММ / ГГГГ.
-   Хранятся строкой: 'ГГГГ' | 'ММ-ГГГГ' | 'ДД-ММ-ГГГГ' —
-   не все даты известны точно, достаточно года или месяца с годом.
+   Dates: separate DD / MM / YYYY fields.
+   Stored as a string: 'YYYY' | 'MM-YYYY' | 'DD-MM-YYYY'.
+   Not every date is known exactly, a year or a month with a year is enough.
    ============================================================ */
-// только цифры в полях даты
-for (const el of [birthDayEl, birthMonthEl, birthYearEl, deathDayEl, deathMonthEl, deathYearEl]) {
+// digits only in the date fields
+for (const el of [birthDayEl, birthMonthEl, birthYearEl, deathDayEl, deathMonthEl, deathYearEl,
+                  marDayEl, marMonthEl, marYearEl, divDayEl, divMonthEl, divYearEl]) {
   el.addEventListener('input', () => { el.value = el.value.replace(/\D/g, ''); });
 }
 
-// Собрать строку даты из трёх полей.
-// Возвращает '' (все пустые) | строку даты | undefined (невалидно).
+// Build a date string from the three fields.
+// Returns '' (all empty) | a date string | undefined (invalid).
 function composeDate(dEl, mEl, yEl) {
   const d = dEl.value.trim();
   const mo = mEl.value.trim();
   const y = yEl.value.trim();
   if (!d && !mo && !y) return '';
-  if (!y) return undefined;              // год обязателен
+  if (!y) return undefined;              // year is required
   if (y.length !== 4) return undefined;
-  if (d && !mo) return undefined;        // день без месяца нельзя
+  if (d && !mo) return undefined;        // a day without a month is not allowed
   if (mo && (+mo < 1 || +mo > 12)) return undefined;
   let s = y;
   if (mo) s = mo.padStart(2, '0') + '-' + s;
   if (d) s = d.padStart(2, '0') + '-' + s;
-  // проверка по календарю (например, 31-02 не существует)
+  // calendar check (31-02 does not exist, for example)
   if (parseRuDate(s) === undefined) return undefined;
   return s;
 }
 
-// Заполнить три поля из строки 'ГГГГ' | 'ММ-ГГГГ' | 'ДД-ММ-ГГГГ'
+// Fill the three fields from a 'YYYY' | 'MM-YYYY' | 'DD-MM-YYYY' string
 function fillDateParts(dEl, mEl, yEl, s) {
   const parts = (s || '').split('-');
   yEl.value = parts.pop() || '';
@@ -184,8 +276,8 @@ function fillDateParts(dEl, mEl, yEl, s) {
   dEl.value = parts.pop() || '';
 }
 
-// 'ДД-ММ-ГГГГ' | 'ММ-ГГГГ' | 'ГГГГ' -> timestamp | null (пусто) | undefined (невалидно)
-// неполная дата считается от начала месяца/года (для сортировки)
+// 'DD-MM-YYYY' | 'MM-YYYY' | 'YYYY' -> timestamp | null (empty) | undefined (invalid)
+// a partial date counts from the start of the month or year (for sorting)
 function parseRuDate(s) {
   s = (s || '').trim();
   if (!s) return null;
@@ -209,9 +301,9 @@ function parseRuDate(s) {
 }
 
 /* ============================================================
-   Связи родитель-ребёнок
+   Parent-child links
    ============================================================ */
-// Является ли `ancestorId` предком `personId` (идём вверх по parents)
+// Is `ancestorId` an ancestor of `personId` (walking up through parents)
 function isAncestor(ancestorId, personId) {
   const seen = new Set();
   const stack = [personId];
@@ -226,21 +318,21 @@ function isAncestor(ancestorId, personId) {
   return false;
 }
 
-// Проверка возможности связи. Возвращает null, если связь допустима
-// (или уже существует — тогда это no-op), иначе текст ошибки.
+// Checks whether a link is allowed. Returns null if it is
+// (or if it already exists, which makes it a no-op), otherwise the error text.
 function canAddParent(child, parent) {
-  if (child.id === parent.id) return 'Человек не может быть родителем самому себе';
-  if (child.parents.includes(parent.id)) return null; // связь уже есть
+  if (child.id === parent.id) return t('err.selfParent');
+  if (child.parents.includes(parent.id)) return null; // link already exists
   if (child.parents.length >= 2) {
-    return `У ${fullName(child)} уже указано два родителя`;
+    return t('err.twoParents', { name: fullName(child) });
   }
   if (isAncestor(child.id, parent.id)) {
-    return 'Такая связь создаёт замкнутый круг в древе';
+    return t('err.cycle');
   }
   return null;
 }
 
-// Добавить parent к child. Бросает Error с текстом для пользователя.
+// Adds parent to child. Throws an Error carrying user-facing text.
 function addParent(child, parent) {
   const err = canAddParent(child, parent);
   if (err) throw new Error(err);
@@ -253,7 +345,68 @@ function removeParent(childId, parentId) {
   child.parents = child.parents.filter((id) => id !== parentId);
 }
 
-// Пары «родственник + кем приходится» из формы (без пустых)
+/* ---------- marriages ---------- */
+// The pair is unordered, so every lookup has to check both columns.
+function marriageBetween(x, y) {
+  return marriages.find((m) => (m.a === x && m.b === y) || (m.a === y && m.b === x)) || null;
+}
+
+function marriagesOf(id) {
+  return marriages.filter((m) => m.a === id || m.b === id);
+}
+
+function spouseIdIn(m, id) {
+  return m.a === id ? m.b : m.a;
+}
+
+function addMarriage(x, y) {
+  if (x === y) throw new Error(t('err.selfLink'));
+  const existing = marriageBetween(x, y);
+  if (existing) return existing;      // already married, nothing to do
+  const m = { id: uid(), a: x, b: y, status: 'married' };
+  marriages.push(m);
+  return m;
+}
+
+function removeMarriage(id) {
+  marriages = marriages.filter((m) => m.id !== id);
+}
+
+// Everyone this person is or was married to, plus anyone they share a child
+// with. The inferred half keeps trees built before marriages existed working:
+// a couple with children still reads as married without an explicit record.
+function spouseLinks(id) {
+  const out = [];
+  const seen = new Set();
+  for (const m of marriagesOf(id)) {
+    const other = spouseIdIn(m, id);
+    if (!byId(other) || seen.has(other)) continue;
+    seen.add(other);
+    out.push({ id: other, ex: m.status === 'divorced' });
+  }
+  for (const c of people) {
+    if (!c.parents.includes(id)) continue;
+    for (const pid of c.parents) {
+      if (pid === id || seen.has(pid) || !byId(pid)) continue;
+      seen.add(pid);
+      out.push({ id: pid, ex: false });
+    }
+  }
+  return out;
+}
+
+// Everyone sharing at least one parent. Not a stored link: it falls out of
+// the parent lists, which is why the form shows siblings but cannot edit them.
+function siblingsOf(id) {
+  const me = byId(id);
+  if (!me || !me.parents.length) return [];
+  const mine = new Set(me.parents);
+  return people
+    .filter((q) => q.id !== id && q.parents.some((pid) => mine.has(pid)))
+    .sort((a, b) => (parseRuDate(a.birthDate) ?? Infinity) - (parseRuDate(b.birthDate) ?? Infinity));
+}
+
+// Pairs of relative plus how they relate, taken from the form (empty ones skipped)
 function formRelationPairs() {
   return [
     { otherId: relativeSelect.value, relType: relationSelect.value },
@@ -261,22 +414,29 @@ function formRelationPairs() {
   ].filter((r) => r.otherId);
 }
 
-// Применить несколько связей к человеку person атомарно:
-// если какая-то связь недопустима, откатываем уже добавленные.
+// Applies several links to person atomically:
+// if any link is not allowed, roll back the ones already added.
 function applyRelations(person, pairs) {
   const applied = [];
   try {
     for (const { otherId, relType } of pairs) {
-      if (otherId === person.id) throw new Error('Нельзя связать человека с самим собой');
+      if (otherId === person.id) throw new Error(t('err.selfLink'));
       const other = byId(otherId);
       if (!other) continue;
+      if (relType === 'spouse') {
+        if (!marriageBetween(person.id, other.id)) {
+          const m = addMarriage(person.id, other.id);
+          applied.push(['marriage', m.id]);
+        }
+        continue;
+      }
       let child, parent;
       if (relType === 'father' || relType === 'mother') {
-        child = person; parent = other; // выбранный — родитель человека
+        child = person; parent = other; // the selected person is this person's parent
       } else {
-        child = other; parent = person; // сын/дочь: человек — родитель выбранного
+        child = other; parent = person; // son/daughter: this person is the parent of the selected one
       }
-      // папа/сын → М, мама/дочь → Ж
+      // father/son -> М, mother/daughter -> Ж
       other.gender = (relType === 'father' || relType === 'son') ? 'М' : 'Ж';
       const err = canAddParent(child, parent);
       if (err) throw new Error(err);
@@ -286,15 +446,16 @@ function applyRelations(person, pairs) {
       }
     }
   } catch (e) {
-    for (const [child, pid] of applied) {
-      child.parents = child.parents.filter((id) => id !== pid);
+    for (const [what, ref] of applied) {
+      if (what === 'marriage') removeMarriage(ref);
+      else what.parents = what.parents.filter((id) => id !== ref);
     }
     throw e;
   }
 }
 
 /* ============================================================
-   Вспомогательные
+   Helpers
    ============================================================ */
 function fullName(p) {
   const last = p.maidenName
@@ -303,8 +464,8 @@ function fullName(p) {
   return [last, p.firstName, p.middleName].filter(Boolean).join(' ');
 }
 
-// Вывод пола: по отчеству (-ич → М, -на → Ж),
-// если отчества нет — по имени (-а/-я → Ж, иначе М; на -ь — неизвестно)
+// Gender inference: from the patronymic (-ич -> М, -на -> Ж).
+// With no patronymic, from the first name (-а/-я -> Ж, otherwise М; -ь is unknown)
 function inferGender(p) {
   const m = (p.middleName || '').trim().toLowerCase();
   if (m.endsWith('ич')) return 'М';
@@ -316,8 +477,8 @@ function inferGender(p) {
   return 'М';
 }
 
-// Пол: отчество (-ич → М, -на → Ж) — самый надёжный признак, он в приоритете;
-// если отчества нет или оно неоднозначно — сохранённое значение, затем вывод по имени
+// Gender: the patronymic (-ич -> М, -на -> Ж) is the most reliable signal and wins.
+// With no patronymic or an ambiguous one, use the stored value, then infer from the name
 function genderOf(p) {
   const m = (p.middleName || '').trim().toLowerCase();
   if (m.endsWith('ич')) return 'М';
@@ -325,7 +486,15 @@ function genderOf(p) {
   return p.gender || inferGender(p);
 }
 
-// расстояния в поколениях до всех предков personId (BFS вверх по parents)
+// 'М'/'Ж' are stored in the database; the table shows them in the current language
+function genderLabel(p) {
+  const g = genderOf(p);
+  if (g === 'М') return t('gender.m');
+  if (g === 'Ж') return t('gender.f');
+  return '';
+}
+
+// generation distances to every ancestor of personId (BFS up through parents)
 function ancestorDistances(id) {
   const dist = new Map();
   const queue = [[id, 0]];
@@ -343,33 +512,24 @@ function ancestorDistances(id) {
   return dist;
 }
 
-// Кровное родство person к anchor: { term, dist } | null.
-// dist — расстояние в поколениях (предок: g, потомок: h, боковая линия: g+h).
-// aAnc/bAnc — карты предков из ancestorDistances (передаются, чтобы не считать заново)
+// Blood relation of person to anchor: { rel, dist } | null.
+// rel is a kinship descriptor for i18n.js, never a finished word.
+// dist is the distance in generations (ancestor: g, descendant: h, collateral line: g+h).
+// aAnc/pAnc are ancestor maps from ancestorDistances, passed in to avoid recomputing them.
 function bloodInfo(anchor, person, aAnc, pAnc) {
   const fem = genderOf(person) === 'Ж';
 
-  // person — прямой предок anchor
+  // person is a direct ancestor of anchor
   if (aAnc.has(person.id)) {
     const g = aAnc.get(person.id);
-    let term;
-    if (g === 1) term = fem ? 'мама' : 'папа';
-    else if (g === 2) term = fem ? 'бабушка' : 'дедушка';
-    else if (g === 3) term = fem ? 'прабабушка' : 'прадедушка';
-    else term = `${g - 2}П ${fem ? 'бабушка' : 'дедушка'}`;
-    return { term, dist: g };
+    return { rel: { k: 'anc', g, fem }, dist: g };
   }
-  // person — прямой потомок anchor
+  // person is a direct descendant of anchor
   if (pAnc.has(anchor.id)) {
     const h = pAnc.get(anchor.id);
-    let term;
-    if (h === 1) term = fem ? 'дочь' : 'сын';
-    else if (h === 2) term = fem ? 'внучка' : 'внук';
-    else if (h === 3) term = fem ? 'правнучка' : 'правнук';
-    else term = `${h - 2}П ${fem ? 'внучка' : 'внук'}`;
-    return { term, dist: h };
+    return { rel: { k: 'desc', h, fem }, dist: h };
   }
-  // ближайший общий предок
+  // nearest common ancestor
   let best = null;
   for (const [id, g] of aAnc) {
     const h = pAnc.get(id);
@@ -378,128 +538,88 @@ function bloodInfo(anchor, person, aAnc, pAnc) {
   }
   if (!best) return null;
   const { g, h } = best;
-  let term;
-  if (g === 1 && h === 1) term = fem ? 'сестра' : 'брат';
-  else if (h === 1) term = g === 2 ? (fem ? 'тётя' : 'дядя') : `${g - 1}Ю ${fem ? 'бабушка' : 'дедушка'}`;
-  else if (g === 1) term = h === 2 ? (fem ? 'племянница' : 'племянник') : `${h - 2}П ${fem ? 'племянница' : 'племянник'}`;
-  else if (g === h) term = `${g}Ю ${fem ? 'сестра' : 'брат'}`;
-  else if (g > h) {
-    // старше на up поколений: 2Ю дедушка, 2Ю прадедушка, 2Ю 2П дедушка…
-    const up = g - h;
-    const w = up === 1 ? (fem ? 'бабушка' : 'дедушка')
-            : up === 2 ? (fem ? 'прабабушка' : 'прадедушка')
-            : `${up - 1}П ${fem ? 'бабушка' : 'дедушка'}`;
-    term = `${h}Ю ${w}`;
-  } else {
-    // младше на down поколений: 3Ю внук, 3Ю правнук, 3Ю 2П внук…
-    const down = h - g;
-    const w = down === 1 ? (fem ? 'внучка' : 'внук')
-            : down === 2 ? (fem ? 'правнучка' : 'правнук')
-            : `${down - 1}П ${fem ? 'внучка' : 'внук'}`;
-    term = `${g}Ю ${w}`;
-  }
-  return { term, dist: g + h };
+  let rel;
+  if (g === 1 && h === 1) rel = { k: 'sib', fem };          // sibling
+  else if (h === 1) rel = { k: 'pib', g, fem };             // aunt, great-aunt...
+  else if (g === 1) rel = { k: 'nib', h, fem };             // niece, great-niece...
+  else rel = { k: 'cous', g, h, fem };                      // cousins, possibly removed
+  return { rel, dist: g + h };
 }
 
-// кровное родство person относительно фокусного ('' если не родственники)
+// blood relation of person to the focus person ('' when they are not related)
 function kinshipLabel(focus, person) {
-  if (person.id === focus.id) return 'Я';
+  if (person.id === focus.id) return renderTerm({ k: 'me' });
   const info = bloodInfo(focus, person, ancestorDistances(focus.id), ancestorDistances(person.id));
-  return info ? info.term : '';
+  return info ? renderTerm(info.rel) : '';
 }
 
-// все супруги: люди, с которыми у q есть общие дети
-function coParents(q) {
-  const out = [];
-  for (const c of people) {
-    if (!c.parents.includes(q.id)) continue;
-    for (const id of c.parents) {
-      if (id !== q.id && byId(id) && !out.includes(id)) out.push(id);
-    }
+// Close blood relations, matched on the descriptor rather than on a word.
+// The exact in-law term depends on them: a wife's brother and a husband's
+// brother are both a brother-in-law in English but not in Russian.
+function isParent(x, fem) { return x.k === 'anc' && x.g === 1 && x.fem === fem; }
+function isSibling(x, fem) { return x.k === 'sib' && x.fem === fem; }
+function isChild(x, fem) { return x.k === 'desc' && x.h === 1 && x.fem === fem; }
+
+// status via a spouse: X is the wife or husband of the person with status s.
+// A former marriage skips the single-word terms, because 'бывшая невестка'
+// reads clearly while a collapsed word would hide that the marriage ended.
+function inLawBySpouse(s, fem, ex) {
+  if (s.k === 'me') return { k: 'spouse', fem, ex };
+  if (ex) return { k: 'spouseOf', fem, ex, of: s };
+  if (fem && (isSibling(s, false) || isChild(s, false))) return { k: 'dil' };
+  if (fem && isParent(s, false)) return { k: 'stepmother' };
+  if (!fem && (isSibling(s, true) || isChild(s, true))) return { k: 'sonil' };
+  if (!fem && isParent(s, true)) return { k: 'stepfather' };
+  return { k: 'spouseOf', fem, of: s };
+}
+
+// status via a blood relative: X relates as rel to the person with status s
+function inLawByBlood(s, rel) {
+  if (s.k === 'me') return rel; // direct blood relation to the focus person
+  if (s.k === 'spouse') {
+    const viaFem = s.fem; // which spouse the link runs through
+    if (isParent(rel, true)) return { k: 'mil', viaFem };
+    if (isParent(rel, false)) return { k: 'fil', viaFem };
+    if (isSibling(rel, false)) return { k: 'bil', viaFem };
+    if (isSibling(rel, true)) return { k: 'sil', viaFem };
   }
-  return out;
-}
-
-// родительный падеж последнего слова статуса: 'мама жены', 'брат 2Ю сестры'
-const GENITIVE = {
-  мама: 'мамы', папа: 'папы', жена: 'жены', муж: 'мужа',
-  брат: 'брата', сестра: 'сестры', сын: 'сына', дочь: 'дочери',
-  бабушка: 'бабушки', дедушка: 'дедушки',
-  прабабушка: 'прабабушки', прадедушка: 'прадедушки',
-  внук: 'внука', внучка: 'внучки', правнук: 'правнука', правнучка: 'правнучки',
-  тётя: 'тёти', дядя: 'дяди', племянник: 'племянника', племянница: 'племянницы',
-  невестка: 'невестки', зять: 'зятя', мачеха: 'мачехи', отчим: 'отчима',
-  теща: 'тещи', тесть: 'тестя', свекровь: 'свекрови', свекор: 'свекра',
-  шурин: 'шурина', свояченица: 'свояченицы', деверь: 'деверя', золовка: 'золовки',
-  сват: 'свата', сватья: 'сватьи',
-};
-
-function genitive(s) {
-  const words = s.split(' ');
-  // склоняем первое существительное — это голова цепочки:
-  // '2Ю сестра' -> '2Ю сестры', 'муж 2П бабушки' -> 'мужа 2П бабушки'
-  const i = words.findIndex((w) => GENITIVE[w]);
-  if (i >= 0) words[i] = GENITIVE[words[i]];
-  return words.join(' ');
-}
-
-// статус через супруга: X — жена/муж человека со статусом s
-function inLawBySpouse(s, fem) {
-  if (s === 'Я') return fem ? 'жена' : 'муж';
-  if (fem && (s === 'брат' || s === 'сын')) return 'невестка';
-  if (fem && s === 'папа') return 'мачеха';
-  if (!fem && (s === 'сестра' || s === 'дочь')) return 'зять';
-  if (!fem && s === 'мама') return 'отчим';
-  return `${fem ? 'жена' : 'муж'} ${genitive(s)}`;
-}
-
-// статус через кровного родственника: X приходится k человеку со статусом s
-function inLawByBlood(s, k) {
-  if (s === 'Я') return k; // прямое кровное родство с фокусным
-  if (s === 'жена') {
-    if (k === 'мама') return 'теща';
-    if (k === 'папа') return 'тесть';
-    if (k === 'брат') return 'шурин';
-    if (k === 'сестра') return 'свояченица';
+  if (s.k === 'dil') { // the parents of a son's wife are сват/сватья
+    if (isParent(rel, true)) return { k: 'coParent', fem: true };
+    if (isParent(rel, false)) return { k: 'coParent', fem: false };
   }
-  if (s === 'муж') {
-    if (k === 'мама') return 'свекровь';
-    if (k === 'папа') return 'свекор';
-    if (k === 'брат') return 'деверь';
-    if (k === 'сестра') return 'золовка';
-  }
-  if (s === 'невестка') { // родители жены сына — сват/сватья
-    if (k === 'мама') return 'сватья';
-    if (k === 'папа') return 'сват';
-  }
-  return `${k} ${genitive(s)}`;
+  return { k: 'bloodOf', rel, of: s };
 }
 
-// Статусы всех людей относительно фокусного — кратчайший путь
-// (в поколениях) по кровным и супружеским рёбрам: отец всегда
-// окажется на шаг ближе сына, а не на том же расстоянии.
-// Брак в пути — один, и после него не более 2 кровных шагов:
-// «теща», «бабушка жены», «муж тёти» — показываем,
-// а «троюродный внук мужа прабабушки» — уже никто, статус не выводим.
-// Релаксация в очередь (SPFA): пересчёт только при улучшении пути.
+// Status of everyone relative to the focus person: the shortest path
+// (counted in generations) over blood and marriage edges, so a father always
+// lands one step closer than a son instead of at the same distance.
+// At most one marriage per path, and no more than 2 blood steps after it:
+// «теща», «бабушка жены», «муж тёти» are shown,
+// while «троюродный внук мужа прабабушки» is nobody and gets no status.
+// Queue-based relaxation (SPFA): recompute only when the path improves.
+// Returns a map of person id -> kinship descriptor for I18n.renderTerm.
+// Marriage budget sentinel: any blood step from a person carrying this is
+// rejected, because the allowance is at most 2 and this exceeds it.
+const INLAW_BLOCKED = 99;
+
 function computeStatuses(focus) {
   const ancOf = new Map(people.map((p) => [p.id, ancestorDistances(p.id)]));
   const dist = new Map([[focus.id, 0]]);
-  const edges = new Map([[focus.id, 0]]); // число рёбер: при равном dist прямой термин лучше составного
-  // -1: брака в пути не было; >= 0: кровное расстояние, пройденное после брака
+  const edges = new Map([[focus.id, 0]]); // edge count: at equal dist a direct term beats a compound one
+  // -1: no marriage on the path; >= 0: blood distance travelled after the marriage
   const bam = new Map([[focus.id, -1]]);
-  const term = new Map([[focus.id, 'Я']]);
+  const term = new Map([[focus.id, { k: 'me' }]]);
   const queue = [focus.id];
   while (queue.length) {
     const q = byId(queue.shift());
     const sq = term.get(q.id);
     const dq = dist.get(q.id);
     const mq = bam.get(q.id);
-    // кровные рёбра: от фокусного — все (прямое родство),
-    // после брака — не более 2 шагов («теща», «бабушка жены»).
-    // Кровь-после-крови пропускаем: прямое ребро от фокусного всегда
-    // не хуже, а для не-родственников оно даёт чепуху
-    // вида «4Ю брат 3Ю дедушки» — это уже никто.
+    // Blood edges: all of them from the focus person (direct kinship),
+    // and at most 2 steps after a marriage («теща», «бабушка жены»).
+    // Blood after blood is skipped: the direct edge from the focus person is
+    // never worse, and for non-relatives it produces nonsense
+    // such as «4Ю брат 3Ю дедушки», which is nobody.
     for (const p of people) {
       if (p.id === q.id) continue;
       if (mq === -1 && q.id !== focus.id) continue;
@@ -510,7 +630,7 @@ function computeStatuses(focus) {
         mp = -1;
       } else {
         mp = mq + info.dist;
-        if (mp > 2) continue; // слишком далеко от брака — «никто»
+        if (mp > 2) continue; // too far from the marriage, so nobody
       }
       const cand = dq + info.dist;
       const candEdges = edges.get(q.id) + 1;
@@ -521,12 +641,12 @@ function computeStatuses(focus) {
       dist.set(p.id, cand);
       edges.set(p.id, candEdges);
       bam.set(p.id, mp);
-      term.set(p.id, inLawByBlood(sq, info.term));
+      term.set(p.id, inLawByBlood(sq, info.rel));
       queue.push(p.id);
     }
-    // супружеские рёбра (все, а не первый попавшийся) — максимум один брак в пути
+    // marriage edges (all of them, not just the first), at most one marriage per path
     if (mq === -1) {
-      for (const spId of coParents(q)) {
+      for (const { id: spId, ex } of spouseLinks(q.id)) {
         const sp = byId(spId);
         const cand = dq + 1;
         const candEdges = edges.get(q.id) + 1;
@@ -536,8 +656,10 @@ function computeStatuses(focus) {
         }
         dist.set(sp.id, cand);
         edges.set(sp.id, candEdges);
-        bam.set(sp.id, 0);
-        term.set(sp.id, inLawBySpouse(sq, genderOf(sp) === 'Ж'));
+        // A divorce ends the in-law relationships it created: the ex-wife still
+        // gets a term, but her mother is no longer anyone's mother-in-law.
+        bam.set(sp.id, ex ? INLAW_BLOCKED : 0);
+        term.set(sp.id, inLawBySpouse(sq, genderOf(sp) === 'Ж', ex));
         queue.push(sp.id);
       }
     }
@@ -549,7 +671,7 @@ function lifeDates(p) {
   const b = p.birthDate || '';
   const d = p.deathDate || '';
   if (b && d) return `${b} — ${d}`;
-  if (b) return `р. ${b}`;
+  if (b) return `${t('life.born')} ${b}`;
   if (d) return `† ${d}`;
   return '';
 }
@@ -559,7 +681,7 @@ function ellipsize(s, max) {
 }
 
 /* ============================================================
-   Форма: создание и редактирование
+   Form: create and edit
    ============================================================ */
 function showError(msg) {
   formError.textContent = msg;
@@ -569,11 +691,18 @@ function clearError() {
   formError.classList.add('hidden');
 }
 
+// The form heading and the submit button depend on whether we are creating
+// or editing, so they cannot be plain data-i18n targets like the rest.
+function renderFormChrome() {
+  formTitle.textContent = t(editingId ? 'form.edit' : 'form.new');
+  submitBtn.textContent = t(editingId ? 'form.save' : 'form.add');
+}
+
 function resetForm() {
   editingId = null;
+  closeMarriage();
   form.reset();
-  formTitle.textContent = 'Новый человек';
-  submitBtn.textContent = 'Добавить';
+  renderFormChrome();
   cancelBtn.classList.add('hidden');
   relativesBox.classList.add('hidden');
   clearError();
@@ -584,18 +713,24 @@ function startEdit(id) {
   const p = byId(id);
   if (!p) return;
   editingId = id;
+  closeMarriage();
   lastNameEl.value = p.lastName;
   maidenNameEl.value = p.maidenName || '';
   firstNameEl.value = p.firstName;
   middleNameEl.value = p.middleName;
+  birthPlaceEl.value = p.birthPlace || '';
+  notesEl.value = p.notes || '';
   fillDateParts(birthDayEl, birthMonthEl, birthYearEl, p.birthDate);
   fillDateParts(deathDayEl, deathMonthEl, deathYearEl, p.deathDate);
-  formTitle.textContent = 'Редактирование';
-  submitBtn.textContent = 'Сохранить';
+  renderFormChrome();
   cancelBtn.classList.remove('hidden');
   clearError();
   renderRelativeSelect();
   renderRelativesChips();
+  // One marriage means there is nothing to pick, so show its details rather
+  // than hiding them behind a click nobody knows to make.
+  const own = marriagesOf(id);
+  if (own.length === 1) openMarriage(own[0].id);
   focusToggle.checked = !!p.focus;
   lastNameEl.focus();
 }
@@ -608,36 +743,38 @@ form.addEventListener('submit', (e) => {
   const maidenName = maidenNameEl.value.trim();
   const firstName = firstNameEl.value.trim();
   const middleName = middleNameEl.value.trim();
+  const birthPlace = birthPlaceEl.value.trim();
+  const notes = notesEl.value.trim();
 
   if (!lastName && !firstName) {
-    showError('Укажите хотя бы имя или фамилию');
+    showError(t('err.nameRequired'));
     return;
   }
   const birth = composeDate(birthDayEl, birthMonthEl, birthYearEl);
   if (birth === undefined) {
-    showError('Дата рождения: год ГГГГ обязателен, месяц 1–12, день — по календарю');
+    showError(t('err.birthDate'));
     return;
   }
   const death = composeDate(deathDayEl, deathMonthEl, deathYearEl);
   if (death === undefined) {
-    showError('Дата смерти: год ГГГГ обязателен, месяц 1–12, день — по календарю');
+    showError(t('err.deathDate'));
     return;
   }
   if (birth && death && parseRuDate(death) < parseRuDate(birth)) {
-    showError('Дата смерти раньше даты рождения');
+    showError(t('err.deathBeforeBirth'));
     return;
   }
 
   const pairs = formRelationPairs();
   if (pairs.length === 2 && pairs[0].otherId === pairs[1].otherId) {
-    showError('Выберите двух разных родственников');
+    showError(t('err.sameRelatives'));
     return;
   }
 
   if (editingId) {
     const p = byId(editingId);
     if (!p) { resetForm(); return; }
-    // сначала применяем связи, потом сохраняем поля
+    // apply the links first, then save the fields
     try {
       applyRelations(p, pairs);
     } catch (err) {
@@ -649,6 +786,8 @@ form.addEventListener('submit', (e) => {
     p.firstName = firstName;
     p.middleName = middleName;
     p.birthDate = birth;
+    p.birthPlace = birthPlace;
+    p.notes = notes;
     p.deathDate = death;
     if (focusToggle.checked) setFocus(p.id, true);
     save();
@@ -659,6 +798,8 @@ form.addEventListener('submit', (e) => {
       id: uid(),
       lastName, maidenName, firstName, middleName,
       birthDate: birth,
+      birthPlace,
+      notes,
       deathDate: death,
       parents: [],
     };
@@ -672,17 +813,17 @@ form.addEventListener('submit', (e) => {
     if (focusToggle.checked) setFocus(person.id, true);
     save();
     resetForm();
-    fitRequested = true; // после остановки симуляции вписать граф в кадр
+    fitRequested = true; // fit the graph into view once the simulation stops
     renderAll();
   }
 });
 
 cancelBtn.addEventListener('click', resetForm);
 
-// Переключение «Фокуса» при редактировании действует сразу:
-// человек тут же подсвечивается зелёным в таблице и на графе
+// Toggling Focus while editing takes effect immediately:
+// the person turns green in the table and on the graph right away
 focusToggle.addEventListener('change', () => {
-  if (!editingId) return; // нового человека ещё нет — подсветка появится после добавления
+  if (!editingId) return; // no new person yet, the highlight appears once they are added
   setFocus(editingId, focusToggle.checked);
   save();
   renderTable();
@@ -694,11 +835,15 @@ focusToggle.addEventListener('change', () => {
   }
 });
 
-/* ---------- селекты родственников ---------- */
+/* ---------- relative selects ---------- */
 function fillRelativeSelect(sel) {
   const prev = sel.value;
-  sel.innerHTML = '<option value="">— не выбран —</option>';
-  const sorted = [...people].sort((a, b) => fullName(a).localeCompare(fullName(b), 'ru'));
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = t('form.noneSelected');
+  sel.appendChild(none);
+  const sorted = [...people].sort((a, b) => fullName(a).localeCompare(fullName(b), I18n.collator()));
   for (const p of sorted) {
     if (p.id === editingId) continue;
     const opt = document.createElement('option');
@@ -714,7 +859,7 @@ function renderRelativeSelect() {
   fillRelativeSelect(relativeSelect2);
 }
 
-/* ---------- чипы текущих связей при редактировании ---------- */
+/* ---------- chips for current links while editing ---------- */
 function renderRelativesChips() {
   relativesChips.innerHTML = '';
   if (!editingId) {
@@ -727,10 +872,27 @@ function renderRelativesChips() {
   const chips = [];
   for (const pid of p.parents) {
     const parent = byId(pid);
-    if (parent) chips.push({ kind: 'Родитель', person: parent, unlink: () => removeParent(p.id, pid) });
+    if (parent) chips.push({ kind: t('chip.parent'), person: parent, unlink: () => removeParent(p.id, pid) });
   }
   for (const child of people.filter((c) => c.parents.includes(p.id))) {
-    chips.push({ kind: 'Ребёнок', person: child, unlink: () => removeParent(child.id, p.id) });
+    chips.push({ kind: t('chip.child'), person: child, unlink: () => removeParent(child.id, p.id) });
+  }
+  for (const s of siblingsOf(p.id)) {
+    chips.push({
+      kind: t(genderOf(s) === 'Ж' ? 'chip.sister' : 'chip.brother'),
+      person: s,
+      readOnly: true, // remove a shared parent to break it, not this chip
+    });
+  }
+  for (const m of marriagesOf(p.id)) {
+    const other = byId(spouseIdIn(m, p.id));
+    if (!other) continue;
+    chips.push({
+      kind: t(m.status === 'divorced' ? 'chip.exSpouse' : 'chip.spouse'),
+      person: other,
+      marriage: m,
+      unlink: () => removeMarriage(m.id),
+    });
   }
 
   if (!chips.length) {
@@ -741,23 +903,114 @@ function renderRelativesChips() {
 
   for (const chip of chips) {
     const el = document.createElement('span');
-    el.className = 'chip';
+    el.className = chip.readOnly ? 'chip is-readonly' : 'chip';
     el.innerHTML = `<span class="chip-kind">${chip.kind}:</span> ${escapeHtml(fullName(chip.person))}`;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.title = 'Убрать связь';
-    btn.textContent = '✕';
-    btn.addEventListener('click', () => {
-      chip.unlink();
-      save();
-      renderRelativesChips();
-      renderTree();
-      renderRelativeSelect();
-    });
-    el.appendChild(btn);
+    if (chip.marriage) {
+      el.classList.add('is-clickable');
+      el.title = t('chip.openMarriage');
+      if (chip.marriage.id === openMarriageId) el.classList.add('is-open');
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        if (chip.marriage.id === openMarriageId) {
+          closeMarriage();
+          renderRelativesChips();
+        } else {
+          openMarriage(chip.marriage.id);
+        }
+      });
+      const wasDivorced = chip.marriage.status === 'divorced';
+      const flip = document.createElement('button');
+      flip.type = 'button';
+      flip.className = 'chip-status';
+      flip.title = t(wasDivorced ? 'chip.markMarried' : 'chip.markDivorced');
+      flip.textContent = wasDivorced ? '↺' : '⚯';
+      flip.addEventListener('click', () => {
+        chip.marriage.status = wasDivorced ? 'married' : 'divorced';
+        // going back to married drops a divorce date that no longer applies
+        if (chip.marriage.status === 'married') chip.marriage.endDate = '';
+        save();
+        renderAll(); // a divorce changes statuses across the whole table
+        if (chip.marriage.id === openMarriageId) openMarriage(chip.marriage.id);
+      });
+      el.appendChild(flip);
+    }
+    if (!chip.readOnly) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.title = t('chip.unlink');
+      btn.textContent = '✕';
+      btn.addEventListener('click', () => {
+        chip.unlink();
+        save();
+        renderAll(); // dropping a link changes statuses, not just this box
+      });
+      el.appendChild(btn);
+    }
     relativesChips.appendChild(el);
   }
 }
+
+/* ---------- details of one marriage ---------- */
+// Opened by clicking a marriage chip. Kept out of the main submit flow: the
+// fields write straight to the marriage as they are left, so the Save button
+// stays about the person.
+function openMarriage(id) {
+  const m = marriages.find((x) => x.id === id);
+  if (!m || !editingId) return;
+  openMarriageId = id;
+  const other = byId(spouseIdIn(m, editingId));
+  marriageWho.textContent = other ? fullName(other) : '';
+  fillDateParts(marDayEl, marMonthEl, marYearEl, m.date);
+  fillDateParts(divDayEl, divMonthEl, divYearEl, m.endDate);
+  marPlaceEl.value = m.place || '';
+  marriageBox.classList.remove('hidden');
+  renderRelativesChips();
+}
+
+function closeMarriage() {
+  openMarriageId = null;
+  marriageBox.classList.add('hidden');
+}
+
+function saveMarriage() {
+  const m = marriages.find((x) => x.id === openMarriageId);
+  if (!m) return;
+  const date = composeDate(marDayEl, marMonthEl, marYearEl);
+  if (date === undefined) { showError(t('err.marriageDate')); return; }
+  const endDate = composeDate(divDayEl, divMonthEl, divYearEl);
+  if (endDate === undefined) { showError(t('err.divorceDate')); return; }
+  if (date && endDate && parseRuDate(endDate) < parseRuDate(date)) {
+    showError(t('err.divorceBeforeMarriage'));
+    return;
+  }
+  clearError();
+  const wasStatus = m.status;
+  m.date = date;
+  m.place = marPlaceEl.value.trim();
+  m.endDate = endDate;
+  // A date for the divorce says the marriage ended, so the status follows it
+  // rather than making you set both.
+  if (endDate) m.status = 'divorced';
+  save();
+  renderTable();          // a divorce changes statuses across the table
+  renderRelativesChips();
+  if (m.status !== wasStatus) renderTree(); // the bar is drawn differently
+}
+
+for (const el of [marDayEl, marMonthEl, marYearEl, marPlaceEl, divDayEl, divMonthEl, divYearEl]) {
+  el.addEventListener('change', saveMarriage);
+  // these live inside the person form, and Enter there would submit it
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    saveMarriage();
+  });
+}
+
+$('marriageClose').addEventListener('click', () => {
+  closeMarriage();
+  renderRelativesChips();
+});
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({
@@ -766,7 +1019,7 @@ function escapeHtml(s) {
 }
 
 /* ============================================================
-   Таблица с сортировкой
+   Sortable table
    ============================================================ */
 function compareBy(key) {
   return (a, b) => {
@@ -774,7 +1027,7 @@ function compareBy(key) {
     if (key === 'birthDate' || key === 'deathDate') {
       va = parseRuDate(a[key]);
       vb = parseRuDate(b[key]);
-      // пустые значения всегда в конец
+      // empty values always sort last
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
@@ -782,7 +1035,7 @@ function compareBy(key) {
     }
     va = (a[key] || '').toLowerCase();
     vb = (b[key] || '').toLowerCase();
-    return va.localeCompare(vb, 'ru') * sortState.dir;
+    return va.localeCompare(vb, I18n.collator()) * sortState.dir;
   };
 }
 
@@ -791,7 +1044,7 @@ function renderTable() {
   tbody.innerHTML = '';
 
   if (!people.length) {
-    tbody.innerHTML = '<tr class="row-empty"><td colspan="9">Пока никого нет</td></tr>';
+    tbody.innerHTML = `<tr class="row-empty"><td colspan="10">${escapeHtml(t('table.empty'))}</td></tr>`;
   } else {
     const sorted = [...people].sort(compareBy(sortState.key));
     const focusP = people.find((p) => p.focus) || null;
@@ -806,24 +1059,30 @@ function renderTable() {
         <td>${escapeHtml(p.maidenName || '')}</td>
         <td>${escapeHtml(p.firstName)}</td>
         <td>${escapeHtml(p.middleName)}</td>
-        <td>${escapeHtml(genderOf(p))}</td>
+        <td>${escapeHtml(genderLabel(p))}</td>
         <td>${escapeHtml(p.birthDate)}</td>
+        <td>${escapeHtml(p.birthPlace || '')}</td>
         <td>${escapeHtml(p.deathDate)}</td>
-        <td>${escapeHtml(statusMap ? (statusMap.get(p.id) || '') : '')}</td>
+        <td>${escapeHtml(statusMap ? renderTerm(statusMap.get(p.id)) : '')}</td>
         <td></td>`;
-      // клик по фамилии — фокус камеры на этом человеке на графе
-      tr.querySelector('.name-cell').addEventListener('click', () => focusOnPerson(p.id));
+      // Clicking anywhere on the row opens that person for editing and points
+      // the view at them. The edit button keeps its own handler.
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        startEdit(p.id);
+        focusOnPerson(p.id);
+      });
       const btn = document.createElement('button');
       btn.className = 'edit-btn';
       btn.textContent = '✎';
-      btn.title = 'Изменить';
+      btn.title = t('table.edit');
       btn.addEventListener('click', () => startEdit(p.id));
       tr.lastElementChild.appendChild(btn);
       tbody.appendChild(tr);
     }
   }
 
-  // стрелки сортировки в шапке
+  // sort arrows in the header
   document.querySelectorAll('#peopleTable th.sortable').forEach((th) => {
     const arrow = th.querySelector('.arrow');
     arrow.textContent = th.dataset.key === sortState.key ? (sortState.dir === 1 ? '▲' : '▼') : '';
@@ -843,22 +1102,79 @@ document.querySelectorAll('#peopleTable th.sortable').forEach((th) => {
 });
 
 /* ============================================================
-   Дерево: 3D force-граф в пространстве — подход как в mf-lab
-   (3d-force-graph + three-spritetext, физическая раскладка:
-   отталкивание нод + пружины на рёбрах, orbit-управление).
-   Рёбра — только прямое родство родитель→ребёнок,
-   оба родителя равнозначны.
+   Tree: a 3D force graph, the same approach as in mf-lab
+   (3d-force-graph + three-spritetext, physical layout:
+   node repulsion plus springs on the edges, orbit controls).
+   Edges are direct parent -> child kinship only,
+   and both parents carry equal weight.
    ============================================================ */
 const COLOR_ALIVE = '#7b8cf0';
 const COLOR_DEAD = '#a3947a';
 const COLOR_FOCUS = '#3f8f4f';
 const COLOR_EDGE = '#49506b';
 const COLOR_EDGE_HI = '#c3cbf7';
+const COLOR_SPOUSE = '#b98ac4';
+const COLOR_SPOUSE_EX = '#6d6275';
 
 let Graph = null;
+let chart = null;   // handle returned by the SVG chart, null while the graph is up
 let fitRequested = true;
 const highlightedLinks = new Set();
 const highlightedNodes = new Set();
+
+// Generation of every person: 0 with no parents in the tree, otherwise one
+// past the deepest parent. Spouses are pulled onto the same generation so a
+// couple sits side by side even when one of them married in from nowhere.
+function generationLevels() {
+  const level = new Map(people.map((p) => [p.id, 0]));
+  const kids = new Map(people.map((p) => [p.id, []]));
+  for (const p of people) {
+    for (const pid of p.parents) if (kids.has(pid)) kids.get(pid).push(p.id);
+  }
+
+  // Pairs that have to share a generation. A recorded marriage is one, and so
+  // is sharing a child: a wife with no parents of her own would otherwise stay
+  // at the top while her husband moved down as his own parents were added.
+  const pairs = [];
+  for (const m of marriages) {
+    if (level.has(m.a) && level.has(m.b)) pairs.push([m.a, m.b]);
+  }
+  for (const p of people) {
+    const ps = p.parents.filter((id) => level.has(id));
+    for (let i = 1; i < ps.length; i++) pairs.push([ps[0], ps[i]]);
+  }
+
+  // Relax until nothing moves. Every rule only ever pushes someone further
+  // down the page, and the constraints agree at the point where a parent sits
+  // exactly one row above their nearest child, so this settles; the counter is
+  // a guard rather than the real bound.
+  for (let guard = 0; guard <= people.length * 2 + 8; guard++) {
+    let changed = false;
+    // a child sits below its deepest parent
+    for (const p of people) {
+      for (const pid of p.parents) {
+        if (!level.has(pid)) continue;
+        const want = level.get(pid) + 1;
+        if (want > level.get(p.id)) { level.set(p.id, want); changed = true; }
+      }
+    }
+    // a parent sits directly above its nearest child, so parents-in-law follow
+    // a daughter who was pulled down to sit beside the person she married
+    for (const p of people) {
+      const cs = kids.get(p.id);
+      if (!cs.length) continue;
+      const want = Math.min(...cs.map((c) => level.get(c))) - 1;
+      if (want > level.get(p.id)) { level.set(p.id, want); changed = true; }
+    }
+    for (const [a, b] of pairs) {
+      const hi = Math.max(level.get(a), level.get(b));
+      if (level.get(a) !== hi) { level.set(a, hi); changed = true; }
+      if (level.get(b) !== hi) { level.set(b, hi); changed = true; }
+    }
+    if (!changed) break;
+  }
+  return level;
+}
 
 function graphDataFromPeople() {
   const ids = new Set(people.map((p) => p.id));
@@ -866,6 +1182,8 @@ function graphDataFromPeople() {
     id: p.id,
     name: fullName(p),
     dates: lifeDates(p),
+    place: p.birthPlace || '',
+    notes: p.notes || '',
     color: p.deathDate ? COLOR_DEAD : COLOR_ALIVE,
     deceased: !!p.deathDate,
     focus: !!p.focus,
@@ -876,10 +1194,16 @@ function graphDataFromPeople() {
       if (ids.has(pid)) links.push({ source: pid, target: p.id });
     }
   }
+  // Marriages are drawn too, so a couple reads as a couple even with no children.
+  for (const m of marriages) {
+    if (ids.has(m.a) && ids.has(m.b)) {
+      links.push({ source: m.a, target: m.b, spouse: true, ex: m.status === 'divorced' });
+    }
+  }
   return { nodes, links };
 }
 
-// подпись ноды: ФИО над сферой, даты жизни под ней
+// node label: full name above the sphere, life dates below it
 function makeNodeObject(n) {
   const group = new THREE.Group();
   const name = new SpriteText(n.name);
@@ -909,7 +1233,7 @@ function initTree() {
   Graph = ForceGraph3D()(tree3d)
     .backgroundColor('#171a24')
     .showNavInfo(false)
-    // ноды
+    // nodes
     .nodeRelSize(4)
     .nodeVal(() => 3)
     .nodeColor((n) => {
@@ -918,18 +1242,29 @@ function initTree() {
     })
     .nodeOpacity(0.95)
     .nodeResolution(24)
-    .nodeLabel((n) => `${n.name}${n.dates ? ' · ' + n.dates : ''}`)
+    .nodeLabel((n) => {
+      const head = [n.name, n.dates, n.place].filter(Boolean).join(' · ');
+      // the label is rendered as HTML, so the note's own line breaks need turning
+      // into <br> or they collapse into one run-on line
+      const note = escapeHtml(ellipsize(n.notes, 140)).replace(/\n/g, '<br>');
+      return n.notes ? `${head}<br>${note}` : head;
+    })
     .nodeThreeObjectExtend(true)
     .nodeThreeObject(makeNodeObject)
-    // рёбра
-    .linkColor((l) => (highlightedLinks.has(l) ? COLOR_EDGE_HI : COLOR_EDGE))
-    .linkWidth((l) => (highlightedLinks.has(l) ? 5.2 : 1.8))
+    // edges
+    .linkColor((l) => {
+      if (highlightedLinks.has(l)) return COLOR_EDGE_HI;
+      if (l.spouse) return l.ex ? COLOR_SPOUSE_EX : COLOR_SPOUSE;
+      return COLOR_EDGE;
+    })
+    .linkWidth((l) => (highlightedLinks.has(l) ? 5.2 : (l.spouse ? 2.6 : 1.8)))
     .linkOpacity(0.4)
-    .linkDirectionalArrowLength(3)
+    // parent to child points somewhere; a marriage has no direction
+    .linkDirectionalArrowLength((l) => (l.spouse ? 0 : 3))
     .linkDirectionalArrowRelPos(1)
     .linkDirectionalParticles((l) => (highlightedLinks.has(l) ? 3 : 0))
     .linkDirectionalParticleWidth(1.6)
-    // интерактив
+    // interaction
     .onNodeHover(handleNodeHover)
     .onNodeClick(handleNodeClick)
     .onEngineStop(() => {
@@ -941,11 +1276,13 @@ function initTree() {
 
   Graph.d3VelocityDecay(0.22);
 
-  new ResizeObserver(sizeTree).observe(treeViewport);
   sizeTree();
 }
 
+new ResizeObserver(sizeTree).observe(treeViewport);
+
 function sizeTree() {
+  if (chart) chart.fit();
   if (!Graph) return;
   Graph.width(treeViewport.clientWidth).height(treeViewport.clientHeight);
 }
@@ -967,7 +1304,7 @@ function handleNodeHover(node) {
   Graph.refresh();
 }
 
-// камера подлетает к ноде — как в mf-lab
+// the camera flies over to the node, as in mf-lab
 function flyCameraTo(node) {
   const dist = 140;
   const hyp = Math.hypot(node.x, node.y, node.z) || 1;
@@ -980,6 +1317,8 @@ function flyCameraTo(node) {
 }
 
 function handleNodeClick(node) {
+  // Same as clicking the row in the list, so both views behave alike.
+  startEdit(node.id);
   selectedId = node.id;
   renderTable();
   const row = tbody.querySelector(`tr[data-id="${node.id}"]`);
@@ -987,17 +1326,24 @@ function handleNodeClick(node) {
   flyCameraTo(node);
 }
 
-// фокус на человеке из таблицы: подсветка строки + подлёт камеры к ноде
+// focus a person from the table: highlight the row and fly the camera to the node
 function focusOnPerson(id) {
   selectedId = id;
   renderTable();
+  if (chart) {
+    chart.centreOn(id);
+    for (const g of treeChart.querySelectorAll('.chart-node')) {
+      g.classList.toggle('is-selected', g.dataset.id === id);
+    }
+    return;
+  }
   if (!Graph) return;
   const node = Graph.graphData().nodes.find((n) => n.id === id);
   if (node && node.x !== undefined) flyCameraTo(node);
 }
 
-// вписать граф в кадр по bbox симуляции
-// (аналог fitMemoryTreeCameraFromSimulationLayout из mf-lab)
+// fit the graph into view using the simulation bounding box
+// (the equivalent of fitMemoryTreeCameraFromSimulationLayout in mf-lab)
 function fitCamera(ms = 800) {
   if (!Graph) return;
   const nodes = Graph.graphData().nodes.filter((n) => n.x !== undefined);
@@ -1032,31 +1378,120 @@ function zoomBy(factor) {
   );
 }
 
-$('zoomIn').addEventListener('click', () => zoomBy(0.75));
-$('zoomOut').addEventListener('click', () => zoomBy(1.33));
-$('fitView').addEventListener('click', () => fitCamera());
+$('zoomIn').addEventListener('click', () => (chart ? chart.zoomIn() : zoomBy(0.75)));
+$('zoomOut').addEventListener('click', () => (chart ? chart.zoomOut() : zoomBy(1.33)));
+$('fitView').addEventListener('click', () => (chart ? chart.fit() : fitCamera()));
 
-// ушко: скрыть/показать левую панель, отдав место графу
+// View switch. Like the language button, it shows what you get by clicking:
+// 'Древо' while the free graph layout is on screen.
+function renderViewButton() {
+  const goingToTree = viewMode !== 'tree';
+  viewToggle.textContent = t(goingToTree ? 'tree.toTree' : 'tree.toGraph');
+  viewToggle.title = t(goingToTree ? 'tree.toTreeTitle' : 'tree.toGraphTitle');
+}
+
+viewToggle.addEventListener('click', () => {
+  viewMode = viewMode === 'tree' ? 'graph' : 'tree';
+  try {
+    localStorage.setItem(VIEW_KEY, viewMode);
+  } catch {
+    // storage disabled: the choice just will not survive a reload
+  }
+  renderViewButton();
+  fitRequested = true; // the layout changes shape, so frame it again
+  renderTree();
+});
+
+// Language switch. The button shows the language it switches to,
+// so 'EN' while the interface is Russian.
+function renderLangButton() {
+  const other = I18n.getLang() === 'ru' ? 'en' : 'ru';
+  langToggle.textContent = other.toUpperCase();
+}
+
+langToggle.addEventListener('click', () => I18n.toggleLang());
+
+// Everything drawn from data has to be rebuilt: statuses, chips,
+// select options and the life dates printed under the graph nodes.
+I18n.onLangChange(() => {
+  renderLangButton();
+  renderViewButton();
+  renderBanner();
+  renderFormChrome();
+  const app = document.querySelector('.app');
+  $('collapseTab').title = t(app.classList.contains('collapsed') ? 'tree.showPanel' : 'tree.hidePanel');
+  renderAll();
+});
+
+// side tab: hide or show the left panel, giving the space to the graph
 $('collapseTab').addEventListener('click', () => {
   const app = document.querySelector('.app');
   const collapsed = app.classList.toggle('collapsed');
   const tab = $('collapseTab');
   tab.textContent = collapsed ? '›' : '‹';
-  tab.title = collapsed ? 'Показать панель' : 'Скрыть панель';
-  sizeTree(); // граф занимает освободившееся место (ResizeObserver тоже сработает)
+  tab.title = t(collapsed ? 'tree.showPanel' : 'tree.hidePanel');
+  sizeTree(); // the graph takes the freed space (ResizeObserver fires too)
 });
+
+// The classic chart: boxes in generation rows joined by right-angle lines.
+// Everyone is drawn, so a spouse who married in brings their own parents and
+// grandparents with them and the two lines meet at the marriage bar.
+function renderChart() {
+  const focused = people.find((p) => p.focus) || null;
+  chart = FamilyChart.render(treeChart, {
+    people,
+    marriages,
+    levels: generationLevels(),
+    nameOf: fullName,
+    labelOf: (p) => ({
+      surname: p.maidenName
+        ? (p.lastName ? `${p.lastName} (${p.maidenName})` : `(${p.maidenName})`)
+        : p.lastName,
+      given: [p.firstName, p.middleName].filter(Boolean).join(' '),
+    }),
+    datesOf: lifeDates,
+    placeOf: (p) => p.birthPlace || '',
+    noteOf: (p) => p.notes || '',
+    labels: { marriage: t('marriage.title'), divorced: t('chip.exSpouse') },
+    focusId: focused ? focused.id : null,
+    selectedId,
+    onPick: (id) => {
+      // Same as clicking the row in the list: open the person for editing
+      // and highlight them.
+      startEdit(id);
+      selectedId = id;
+      renderTable();
+      const row = tbody.querySelector(`tr[data-id="${id}"]`);
+      if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      // repaint the selection in place, so panning and zoom survive the click
+      for (const g of treeChart.querySelectorAll('.chart-node')) {
+        g.classList.toggle('is-selected', g.dataset.id === id);
+      }
+    },
+  });
+}
 
 function renderTree() {
   treeEmpty.classList.toggle('hidden', people.length > 0);
+  const showChart = viewMode === 'tree';
+  tree3d.classList.toggle('hidden', showChart);
+  treeChart.classList.toggle('hidden', !showChart);
+  if (showChart) {
+    renderChart();
+    return;
+  }
+  chart = null;
+  treeChart.textContent = '';
   if (!Graph) initTree();
+  sizeTree(); // the container had no width while the chart was showing
   Graph.graphData(graphDataFromPeople());
-  // физика — как в mf-lab: charge адаптируется к числу нод
+  // physics, as in mf-lab: charge adapts to the node count
   Graph.d3Force('charge').strength(-260 * Math.sqrt(Math.max(1, people.length) / 100));
   Graph.d3Force('link').distance(110);
 }
 
 /* ============================================================
-   Общий рендер
+   Full render
    ============================================================ */
 function renderAll() {
   renderRelativeSelect();

@@ -4,113 +4,158 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Семейное древо</title>
-<link rel="stylesheet" href="styles.css?v=14">
+<link rel="stylesheet" href="styles.css?v=24">
 </head>
 <body>
 <div class="app">
 
-  <!-- ЛЕВАЯ ПАНЕЛЬ -->
+  <!-- LEFT PANEL -->
   <section class="left">
 
-    <!-- Форма создания / редактирования -->
+    <!-- Create / edit form -->
     <div class="card form-card">
       <h2 id="formTitle">Новый человек</h2>
       <form id="personForm" autocomplete="off">
         <div class="field-row">
-          <label>Фамилия
-            <input type="text" id="lastName" placeholder="Иванов">
+          <label><span data-i18n="form.lastName">Фамилия</span>
+            <input type="text" id="lastName" data-i18n-ph="ph.lastName" placeholder="Иванов">
           </label>
-          <label><span>Девичья фамилия <span class="hint">(если есть)</span></span>
-            <input type="text" id="maidenName" placeholder="Петрова">
+          <label><span><span data-i18n="form.maidenName">Девичья фамилия</span>
+              <span class="hint" data-i18n="form.optional">(если есть)</span></span>
+            <input type="text" id="maidenName" data-i18n-ph="ph.maidenName" placeholder="Петрова">
           </label>
-          <label>Имя
-            <input type="text" id="firstName" placeholder="Иван">
+          <label><span data-i18n="form.firstName">Имя</span>
+            <input type="text" id="firstName" data-i18n-ph="ph.firstName" placeholder="Иван">
           </label>
-          <label>Отчество
-            <input type="text" id="middleName" placeholder="Иванович">
-          </label>
-        </div>
-        <div class="field-row">
-          <label><span>Дата рождения <span class="hint">(если есть)</span></span>
-            <div class="date-parts">
-              <input type="text" id="birthDay" placeholder="ДД" inputmode="numeric" maxlength="2">
-              <input type="text" id="birthMonth" placeholder="ММ" inputmode="numeric" maxlength="2">
-              <input type="text" id="birthYear" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
-            </div>
-          </label>
-          <label><span>Дата смерти <span class="hint">(если есть)</span></span>
-            <div class="date-parts">
-              <input type="text" id="deathDay" placeholder="ДД" inputmode="numeric" maxlength="2">
-              <input type="text" id="deathMonth" placeholder="ММ" inputmode="numeric" maxlength="2">
-              <input type="text" id="deathYear" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
-            </div>
+          <label><span data-i18n="form.middleName">Отчество</span>
+            <input type="text" id="middleName" data-i18n-ph="ph.middleName" placeholder="Иванович">
           </label>
         </div>
         <div class="field-row">
-          <label>Родственник
+          <label><span><span data-i18n="form.birthDate">Дата рождения</span>
+              <span class="hint" data-i18n="form.optional">(если есть)</span></span>
+            <div class="date-parts">
+              <input type="text" id="birthDay" data-i18n-ph="ph.day" placeholder="ДД" inputmode="numeric" maxlength="2">
+              <input type="text" id="birthMonth" data-i18n-ph="ph.month" placeholder="ММ" inputmode="numeric" maxlength="2">
+              <input type="text" id="birthYear" data-i18n-ph="ph.year" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
+            </div>
+          </label>
+          <label><span><span data-i18n="form.deathDate">Дата смерти</span>
+              <span class="hint" data-i18n="form.optional">(если есть)</span></span>
+            <div class="date-parts">
+              <input type="text" id="deathDay" data-i18n-ph="ph.day" placeholder="ДД" inputmode="numeric" maxlength="2">
+              <input type="text" id="deathMonth" data-i18n-ph="ph.month" placeholder="ММ" inputmode="numeric" maxlength="2">
+              <input type="text" id="deathYear" data-i18n-ph="ph.year" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
+            </div>
+          </label>
+          <label><span><span data-i18n="form.birthPlace">Место рождения</span>
+              <span class="hint" data-i18n="form.optional">(если есть)</span></span>
+            <input type="text" id="birthPlace" data-i18n-ph="ph.birthPlace" placeholder="Минск">
+          </label>
+        </div>
+        <div class="field-row field-row-wide">
+          <label><span><span data-i18n="form.notes">Заметки</span>
+              <span class="hint" data-i18n="form.optional">(если есть)</span></span>
+            <textarea id="notes" rows="3" data-i18n-ph="ph.notes"
+              placeholder="Профессия, места жизни, семейные истории"></textarea>
+          </label>
+        </div>
+        <div class="field-row">
+          <label><span data-i18n="form.relative">Родственник</span>
             <select id="relativeSelect">
               <option value="">— не выбран —</option>
             </select>
           </label>
-          <label>Он(а) приходится
+          <label><span data-i18n="form.relationIs">Он(а) приходится</span>
             <select id="relationSelect">
-              <option value="father">папа</option>
-              <option value="mother">мама</option>
-              <option value="son">сын</option>
-              <option value="daughter">дочь</option>
+              <option value="father" data-i18n="rel.father">папа</option>
+              <option value="mother" data-i18n="rel.mother">мама</option>
+              <option value="son" data-i18n="rel.son">сын</option>
+              <option value="daughter" data-i18n="rel.daughter">дочь</option>
+              <option value="spouse" data-i18n="rel.spouse">супруг(а)</option>
             </select>
           </label>
         </div>
         <div class="field-row">
-          <label><span>Родственник 2 <span class="hint">(необязательно)</span></span>
+          <label><span><span data-i18n="form.relative2">Родственник 2</span>
+              <span class="hint" data-i18n="form.optional2">(необязательно)</span></span>
             <select id="relativeSelect2">
               <option value="">— не выбран —</option>
             </select>
           </label>
-          <label>Он(а) приходится
+          <label><span data-i18n="form.relationIs">Он(а) приходится</span>
             <select id="relationSelect2">
-              <option value="mother">мама</option>
-              <option value="father">папа</option>
-              <option value="son">сын</option>
-              <option value="daughter">дочь</option>
+              <option value="mother" data-i18n="rel.mother">мама</option>
+              <option value="father" data-i18n="rel.father">папа</option>
+              <option value="son" data-i18n="rel.son">сын</option>
+              <option value="daughter" data-i18n="rel.daughter">дочь</option>
+              <option value="spouse" data-i18n="rel.spouse">супруг(а)</option>
             </select>
           </label>
         </div>
 
         <div id="relativesBox" class="relatives-box hidden">
-          <div class="relatives-title">Текущие связи:</div>
+          <div class="relatives-title" data-i18n="form.currentLinks">Текущие связи:</div>
           <div id="relativesChips" class="relatives-chips"></div>
+
+          <div id="marriageBox" class="marriage-box hidden">
+            <div class="marriage-head">
+              <span class="marriage-who"><span data-i18n="marriage.title">Брак:</span>
+                <b id="marriageWho"></b></span>
+              <button type="button" id="marriageClose" data-i18n-title="marriage.close" title="Свернуть">✕</button>
+            </div>
+            <div class="field-row">
+              <label><span data-i18n="marriage.date">Дата брака</span>
+                <div class="date-parts">
+                  <input type="text" id="marDay" data-i18n-ph="ph.day" placeholder="ДД" inputmode="numeric" maxlength="2">
+                  <input type="text" id="marMonth" data-i18n-ph="ph.month" placeholder="ММ" inputmode="numeric" maxlength="2">
+                  <input type="text" id="marYear" data-i18n-ph="ph.year" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
+                </div>
+              </label>
+              <label><span data-i18n="marriage.place">Место брака</span>
+                <input type="text" id="marPlace" data-i18n-ph="ph.marriagePlace" placeholder="Минск">
+              </label>
+              <label><span data-i18n="marriage.endDate">Дата развода</span>
+                <div class="date-parts">
+                  <input type="text" id="divDay" data-i18n-ph="ph.day" placeholder="ДД" inputmode="numeric" maxlength="2">
+                  <input type="text" id="divMonth" data-i18n-ph="ph.month" placeholder="ММ" inputmode="numeric" maxlength="2">
+                  <input type="text" id="divYear" data-i18n-ph="ph.year" placeholder="ГГГГ" inputmode="numeric" maxlength="4">
+                </div>
+              </label>
+            </div>
+          </div>
         </div>
 
         <div id="formError" class="form-error hidden"></div>
 
         <div class="form-actions">
           <button type="submit" id="submitBtn" class="btn btn-primary">Добавить</button>
-          <button type="button" id="cancelBtn" class="btn btn-ghost hidden">Отмена</button>
+          <button type="button" id="cancelBtn" class="btn btn-ghost hidden" data-i18n="form.cancel">Отмена</button>
           <label class="switch-label">
             <input type="checkbox" id="focusToggle" class="switch-input">
             <span class="switch-slider"></span>
-            Фокус
+            <span data-i18n="form.focus">Фокус</span>
           </label>
         </div>
       </form>
     </div>
 
-    <!-- Список людей -->
+    <!-- People list -->
     <div class="card list-card">
-      <h2>Все люди <span id="peopleCount" class="counter"></span></h2>
+      <h2><span data-i18n="table.all">Все люди</span> <span id="peopleCount" class="counter"></span></h2>
       <div class="table-wrap">
         <table id="peopleTable">
           <thead>
             <tr>
-              <th data-key="lastName" class="sortable">Фамилия <span class="arrow"></span></th>
-              <th>Девичья</th>
-              <th data-key="firstName" class="sortable">Имя <span class="arrow"></span></th>
-              <th>Отчество</th>
-              <th>Пол</th>
-              <th data-key="birthDate" class="sortable">Рождение <span class="arrow"></span></th>
-              <th data-key="deathDate" class="sortable">Смерть <span class="arrow"></span></th>
-              <th>Статус</th>
+              <th data-key="lastName" class="sortable"><span data-i18n="table.lastName">Фамилия</span> <span class="arrow"></span></th>
+              <th data-i18n="table.maidenName">Девичья</th>
+              <th data-key="firstName" class="sortable"><span data-i18n="table.firstName">Имя</span> <span class="arrow"></span></th>
+              <th data-i18n="table.middleName">Отчество</th>
+              <th data-i18n="table.gender">Пол</th>
+              <th data-key="birthDate" class="sortable"><span data-i18n="table.birth">Рождение</span> <span class="arrow"></span></th>
+              <th data-key="birthPlace" class="sortable"><span data-i18n="table.birthPlace">Место</span> <span class="arrow"></span></th>
+              <th data-key="deathDate" class="sortable"><span data-i18n="table.death">Смерть</span> <span class="arrow"></span></th>
+              <th data-i18n="table.status">Статус</th>
               <th></th>
             </tr>
           </thead>
@@ -120,31 +165,33 @@
     </div>
   </section>
 
-  <!-- ПРАВАЯ ПАНЕЛЬ: дерево -->
+  <!-- RIGHT PANEL: tree -->
   <section class="right">
-    <button id="collapseTab" class="collapse-tab" title="Скрыть панель">‹</button>
+    <button id="collapseTab" class="collapse-tab" data-i18n-title="tree.hidePanel" title="Скрыть панель">‹</button>
     <div class="card tree-card">
       <div class="tree-toolbar">
-        <h2>Древо</h2>
+        <h2 data-i18n="tree.title">Древо</h2>
         <div class="tree-controls">
-          <button id="zoomOut" class="btn btn-tool" title="Отдалить">−</button>
-          <button id="zoomIn" class="btn btn-tool" title="Приблизить">+</button>
-          <button id="fitView" class="btn btn-tool" title="Вписать">⤢</button>
+          <button id="viewToggle" class="btn btn-tool btn-lang" title="Разложить по поколениям">Древо</button>
+          <button id="langToggle" class="btn btn-tool btn-lang" data-i18n-title="app.langNext" title="Switch to English">EN</button>
+          <button id="zoomOut" class="btn btn-tool" data-i18n-title="tree.zoomOut" title="Отдалить">−</button>
+          <button id="zoomIn" class="btn btn-tool" data-i18n-title="tree.zoomIn" title="Приблизить">+</button>
+          <button id="fitView" class="btn btn-tool" data-i18n-title="tree.fit" title="Вписать">⤢</button>
         </div>
       </div>
       <div class="tree-viewport" id="treeViewport">
         <div id="tree3d"></div>
-        <div id="treeEmpty" class="tree-empty">Добавьте первого человека в форме слева</div>
+        <div id="treeChart" class="tree-chart hidden"></div>
+        <div id="treeEmpty" class="tree-empty" data-i18n="tree.empty">Добавьте первого человека в форме слева</div>
       </div>
     </div>
   </section>
 
 </div>
-<div id="serverWarning" class="server-warning hidden">
-  Нет связи с сервером БД — запустите <code>start.command</code> в папке сайта.
-  Пока данные сохраняются только в браузере!
-</div>
+<div id="serverWarning" class="server-warning hidden"></div>
 <script src="vendor/graph-bundle.js"></script>
-<script src="app.js?v=24"></script>
+<script src="i18n.js?v=5"></script>
+<script src="chart.js?v=11"></script>
+<script src="app.js?v=40"></script>
 </body>
 </html>

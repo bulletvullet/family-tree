@@ -1,0 +1,99 @@
+{
+  "people": [
+    {
+      "id": "demo1",
+      "lastName": "Иванов",
+      "maidenName": "",
+      "firstName": "Иван",
+      "middleName": "Петрович",
+      "birthDate": "11-06-1978",
+      "deathDate": "",
+      "gender": "М",
+      "focus": true,
+      "parents": [
+        "demo2",
+        "demo3"
+      ],
+      "birthPlace": "Минск",
+      "notes": "Инженер-программист. Жил в Минске и Гомеле."
+    },
+    {
+      "id": "demo2",
+      "lastName": "Иванов",
+      "maidenName": "",
+      "firstName": "Пётр",
+      "middleName": "Семёнович",
+      "birthDate": "1949",
+      "deathDate": "",
+      "gender": "М",
+      "focus": false,
+      "parents": [
+        "demo4"
+      ],
+      "birthPlace": "Гомель",
+      "notes": ""
+    },
+    {
+      "id": "demo3",
+      "lastName": "Иванова",
+      "maidenName": "Сидорова",
+      "firstName": "Мария",
+      "middleName": "Ивановна",
+      "birthDate": "1952",
+      "deathDate": "",
+      "gender": "Ж",
+      "focus": false,
+      "parents": [],
+      "birthPlace": "Брест",
+      "notes": ""
+    },
+    {
+      "id": "demo4",
+      "lastName": "Иванов",
+      "maidenName": "",
+      "firstName": "Семён",
+      "middleName": "",
+      "birthDate": "1920",
+      "deathDate": "1995",
+      "gender": "М",
+      "focus": false,
+      "parents": [],
+      "birthPlace": "Витебск",
+      "notes": "Работал на железной дороге. Воевал, вернулся в 1945."
+    },
+    {
+      "id": "demo5",
+      "lastName": "Иванова",
+      "maidenName": "Петрова",
+      "firstName": "Ольга",
+      "middleName": "Сергеевна",
+      "birthDate": "1980",
+      "deathDate": "",
+      "gender": "Ж",
+      "focus": false,
+      "parents": [],
+      "birthPlace": "Могилёв",
+      "notes": ""
+    }
+  ],
+  "marriages": [
+    {
+      "id": "mar1",
+      "a": "demo2",
+      "b": "demo3",
+      "status": "married",
+      "date": "1975",
+      "place": "Гомель",
+      "endDate": ""
+    },
+    {
+      "id": "mar2",
+      "a": "demo1",
+      "b": "demo5",
+      "status": "married",
+      "date": "14-09-2019",
+      "place": "Минск",
+      "endDate": ""
+    }
+  ]
+}

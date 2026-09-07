@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Семейное древо — локальный сервер с SQLite.
+"""Family tree: local server backed by SQLite.
 
-Отдаёт статику сайта и API:
-  GET  /api/people  — список всех людей
-  POST /api/people  — атомарно заменить весь список (тело: JSON-массив)
+Serves the static site and the API:
+  GET  /api/tree    whole tree: {"schema": n, "people": [...], "marriages": [...]}
+  POST /api/tree    atomically replace both lists (same shape)
+  GET  /api/people  just the people, kept for the public page export
 
-Запуск:  python3 server.py
-Сайт:    http://localhost:8791/
-БД:      data/family.db (SQLite)
+Run:       python3 server.py
+Site:      http://localhost:8791/
+Database:  data/family.db (SQLite)
+
+Both are overridable, so a throwaway instance never shares state with the
+real one:
+  FAMILY_TREE_PORT=8799 FAMILY_TREE_DB=.test-data/family.db python3 server.py
 """
 
 import json
@@ -15,9 +20,15 @@ import os
 import sqlite3
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+# Bump when the API gains or changes a field the page relies on. The page
+# refuses to trust an older server, because a server running old code accepts
+# a request happily and drops every field it does not recognise, losing data
+# with no error anywhere.
+SCHEMA = 1
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(ROOT, 'data', 'family.db')
-PORT = 8791
+DB_PATH = os.path.abspath(os.environ.get('FAMILY_TREE_DB') or os.path.join(ROOT, 'data', 'family.db'))
+PORT = int(os.environ.get('FAMILY_TREE_PORT') or 8791)
 
 
 def db():
@@ -33,9 +44,11 @@ def db():
         parents     TEXT NOT NULL DEFAULT '[]',
         focus       INTEGER NOT NULL DEFAULT 0,
         gender      TEXT NOT NULL DEFAULT '',
-        maiden_name TEXT NOT NULL DEFAULT ''
+        maiden_name TEXT NOT NULL DEFAULT '',
+        birth_place TEXT NOT NULL DEFAULT '',
+        notes       TEXT NOT NULL DEFAULT ''
     )''')
-    # миграции для баз, созданных до появления новых колонок
+    # migrations for databases created before the newer columns existed
     cols = [r[1] for r in con.execute('PRAGMA table_info(people)')]
     if 'focus' not in cols:
         con.execute('ALTER TABLE people ADD COLUMN focus INTEGER NOT NULL DEFAULT 0')
@@ -43,7 +56,61 @@ def db():
         con.execute("ALTER TABLE people ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
     if 'maiden_name' not in cols:
         con.execute("ALTER TABLE people ADD COLUMN maiden_name TEXT NOT NULL DEFAULT ''")
+    if 'birth_place' not in cols:
+        con.execute("ALTER TABLE people ADD COLUMN birth_place TEXT NOT NULL DEFAULT ''")
+    if 'notes' not in cols:
+        con.execute("ALTER TABLE people ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+    # A marriage is one row for the unordered pair {a, b}. A person may appear
+    # in several, which is how remarriage is represented. Children are not
+    # listed here: a child already names its two parents, and that pair says
+    # which marriage it belongs to.
+    con.execute('''CREATE TABLE IF NOT EXISTS marriages (
+        id         TEXT PRIMARY KEY,
+        a          TEXT NOT NULL,
+        b          TEXT NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'married',
+        start_date TEXT NOT NULL DEFAULT '',
+        place      TEXT NOT NULL DEFAULT '',
+        end_date   TEXT NOT NULL DEFAULT ''
+    )''')
+    mcols = [r[1] for r in con.execute('PRAGMA table_info(marriages)')]
+    for name in ('start_date', 'place', 'end_date'):
+        if name not in mcols:
+            con.execute(f"ALTER TABLE marriages ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
     return con
+
+
+def row_to_marriage(r):
+    return {
+        'id': r[0], 'a': r[1], 'b': r[2], 'status': r[3],
+        'date': r[4], 'place': r[5], 'endDate': r[6],
+    }
+
+
+def marriage_to_row(m):
+    status = str(m.get('status') or 'married')
+    if status not in ('married', 'divorced'):
+        status = 'married'
+    return (
+        str(m.get('id', '')), str(m.get('a', '')), str(m.get('b', '')), status,
+        str(m.get('date', '')), str(m.get('place', '')), str(m.get('endDate', '')),
+    )
+
+
+def read_tree(con):
+    people = con.execute(
+        'SELECT id, last_name, first_name, middle_name,'
+        ' birth_date, death_date, parents, focus, gender, maiden_name,'
+        ' birth_place, notes FROM people'
+    ).fetchall()
+    marriages = con.execute(
+        'SELECT id, a, b, status, start_date, place, end_date FROM marriages'
+    ).fetchall()
+    return {
+        'schema': SCHEMA,
+        'people': [row_to_person(r) for r in people],
+        'marriages': [row_to_marriage(r) for r in marriages],
+    }
 
 
 def row_to_person(r):
@@ -51,6 +118,7 @@ def row_to_person(r):
         'id': r[0], 'lastName': r[1], 'firstName': r[2], 'middleName': r[3],
         'birthDate': r[4], 'deathDate': r[5], 'parents': json.loads(r[6]),
         'focus': bool(r[7]), 'gender': r[8], 'maidenName': r[9],
+        'birthPlace': r[10], 'notes': r[11],
     }
 
 
@@ -66,6 +134,8 @@ def person_to_row(p):
         1 if p.get('focus') else 0,
         str(p.get('gender', '')),
         str(p.get('maidenName', '')),
+        str(p.get('birthPlace', '')),
+        str(p.get('notes', '')),
     )
 
 
@@ -77,7 +147,7 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
     def _cors(self):
-        # чтобы API работало и при открытии сайта через Apache / file://
+        # lets the API work when the site is opened through Apache or file://
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
@@ -97,46 +167,69 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == '/api/people':
+        if self.path in ('/api/tree', '/api/people'):
             con = db()
             try:
-                rows = con.execute(
-                    'SELECT id, last_name, first_name, middle_name,'
-                    ' birth_date, death_date, parents, focus, gender, maiden_name FROM people'
-                ).fetchall()
+                tree = read_tree(con)
             finally:
                 con.close()
-            self._json(200, [row_to_person(r) for r in rows])
+            self._json(200, tree if self.path == '/api/tree' else tree['people'])
         else:
             super().do_GET()
 
     def do_POST(self):
-        if self.path != '/api/people':
+        if self.path != '/api/tree':
             self._json(404, {'error': 'not found'})
             return
         try:
             n = int(self.headers.get('Content-Length') or 0)
-            data = json.loads(self.rfile.read(n) or b'[]')
-            if not isinstance(data, list):
-                raise ValueError('expected a JSON list')
-            people = [p for p in data if isinstance(p, dict) and p.get('id')]
+            data = json.loads(self.rfile.read(n) or b'{}')
+            if not isinstance(data, dict):
+                raise ValueError('expected a JSON object with people and marriages')
+            people = [p for p in data.get('people', []) if isinstance(p, dict) and p.get('id')]
+            ids = {p['id'] for p in people}
+            # Drop marriages naming someone who is gone, so a deleted person
+            # cannot leave a dangling spouse behind.
+            marriages = [
+                m for m in data.get('marriages', [])
+                if isinstance(m, dict) and m.get('id')
+                and m.get('a') in ids and m.get('b') in ids and m.get('a') != m.get('b')
+            ]
             con = db()
             try:
-                with con:  # одна транзакция: либо всё, либо ничего
+                with con:  # one transaction: all or nothing
                     con.execute('DELETE FROM people')
                     con.executemany(
-                        'INSERT INTO people VALUES (?,?,?,?,?,?,?,?,?,?)',
+                        'INSERT INTO people VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                         [person_to_row(p) for p in people],
+                    )
+                    con.execute('DELETE FROM marriages')
+                    con.executemany(
+                        'INSERT INTO marriages VALUES (?,?,?,?,?,?,?)',
+                        [marriage_to_row(m) for m in marriages],
                     )
             finally:
                 con.close()
-            self._json(200, {'ok': True, 'count': len(people)})
+            self._json(200, {'ok': True, 'people': len(people), 'marriages': len(marriages)})
         except Exception as e:
             self._json(400, {'error': str(e)})
 
 
 if __name__ == '__main__':
+    # Bind first: a refused start must not create or touch any database.
+    try:
+        server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    except OSError as e:
+        # Someone else already holds the port. Starting is impossible, and
+        # staying quiet would leave that other server answering requests
+        # meant for this one, against a different database.
+        raise SystemExit(
+            f'Port {PORT} is already in use, refusing to start.\n'
+            f'Another family tree server is probably running and it owns a\n'
+            f'different database. Stop it, or pick another port:\n'
+            f'  FAMILY_TREE_PORT=8799 FAMILY_TREE_DB=.test-data/family.db python3 server.py'
+        ) from e
     db().close()
-    print(f'Семейное древо: http://localhost:{PORT}/')
-    print(f'База данных:    {DB_PATH}')
-    ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    print(f'Family tree: http://localhost:{PORT}/')
+    print(f'Database:    {DB_PATH}')
+    server.serve_forever()

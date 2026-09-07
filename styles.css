@@ -8,8 +8,23 @@
   --accent-dark: #95a3f5;
   --accent-soft: rgba(123, 140, 240, .16);
   --danger: #e5647a;
+  --spouse: #b98ac4;
+  --focus-green: #3f8f4f;
+  --sunk: #232735;
+  --sunk-hi: #262b3b;
   --radius: 14px;
   --shadow: 0 2px 10px rgba(0, 0, 0, .35), 0 12px 32px rgba(0, 0, 0, .3);
+
+  /* classic chart */
+  --chart-wire: var(--line);
+  --chart-box: var(--sunk);
+  --chart-box-edge: var(--line);
+  --chart-box-hover: var(--sunk-hi);
+  --chart-name: var(--ink);
+  --chart-dates: var(--ink-soft);
+  --chart-marriage: var(--spouse);
+  --chart-selected: var(--accent);
+  --chart-focus: var(--focus-green);
 }
 
 * { box-sizing: border-box; }
@@ -34,7 +49,7 @@ html, body {
   padding: 16px;
 }
 
-/* ---------- карточки ---------- */
+/* ---------- cards ---------- */
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -52,7 +67,7 @@ html, body {
 
 .counter { color: var(--ink-soft); font-weight: 500; font-size: 13px; }
 
-/* ---------- левая колонка ---------- */
+/* ---------- left column ---------- */
 .left {
   display: flex;
   flex-direction: column;
@@ -68,11 +83,15 @@ html, body {
   gap: 10px;
   margin-bottom: 10px;
 }
-.field-row:has(#birthYear),
 .field-row:has(#relativeSelect),
 .field-row:has(#relativeSelect2) { grid-template-columns: 1fr 1fr; }
+/* the notes box takes the whole width */
+.field-row-wide { grid-template-columns: 1fr; }
 
-/* дата тремя полями: ДД ММ ГГГГ */
+/* two dates and the birthplace share one row */
+.field-row:has(#birthYear) { grid-template-columns: 1fr 1fr 1fr; }
+
+/* date split across three fields: DD MM YYYY */
 .date-parts { display: flex; gap: 6px; }
 .date-parts input { flex: 1; text-align: center; padding-left: 6px; padding-right: 6px; }
 .date-parts input[maxlength="4"] { flex: 1.6; }
@@ -102,7 +121,28 @@ input, select {
   width: 100%;
 }
 
-input::placeholder { color: #5c6377; }
+input::placeholder, textarea::placeholder { color: #5c6377; }
+
+textarea {
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sunk);
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+  width: 100%;
+  resize: vertical;
+  min-height: 62px;
+  line-height: 1.45;
+}
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--sunk-hi);
+}
 
 input:focus, select:focus {
   border-color: var(--accent);
@@ -110,7 +150,7 @@ input:focus, select:focus {
   background: #262b3b;
 }
 
-/* связи при редактировании */
+/* links shown while editing */
 .relatives-box {
   margin: 4px 0 10px;
   padding: 10px 12px;
@@ -119,6 +159,33 @@ input:focus, select:focus {
 }
 .relatives-title { font-size: 12px; font-weight: 700; color: var(--accent-dark); margin-bottom: 6px; }
 .relatives-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* details of one marriage, opened by clicking its chip */
+.marriage-box {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.marriage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.marriage-who { font-size: 12px; color: var(--ink-soft); }
+.marriage-who b { color: var(--ink); }
+.marriage-head button {
+  border: none;
+  background: none;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.marriage-head button:hover { color: var(--accent); }
+.marriage-box .field-row { margin-bottom: 0; }
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -130,6 +197,12 @@ input:focus, select:focus {
   font-size: 12.5px;
 }
 .chip .chip-kind { color: var(--ink-soft); }
+/* siblings are derived from shared parents, so their chips carry no remove button */
+.chip.is-readonly { border-style: dashed; padding-right: 10px; }
+/* a marriage chip opens its dates and place, so it has to look pressable */
+.chip.is-clickable { cursor: pointer; }
+.chip.is-clickable:hover { border-color: var(--accent); }
+.chip.is-open { background: var(--accent-soft); }
 .chip button {
   border: none;
   background: none;
@@ -139,6 +212,9 @@ input:focus, select:focus {
   line-height: 1;
   padding: 0 2px;
 }
+/* marriage chips carry a second button that flips married and divorced */
+.chip .chip-status { color: var(--ink-soft); }
+.chip .chip-status:hover { color: var(--accent); }
 
 .form-error {
   margin: 2px 0 10px;
@@ -152,7 +228,7 @@ input:focus, select:focus {
 
 .form-actions { display: flex; gap: 10px; align-items: center; }
 
-/* ---------- свитчер «Фокус» ---------- */
+/* ---------- Focus switch ---------- */
 .switch-label {
   margin-left: auto;
   display: inline-flex;
@@ -188,7 +264,7 @@ input:focus, select:focus {
 .switch-input:checked + .switch-slider { background: #2f6b3a; border-color: #3f8f4f; }
 .switch-input:checked + .switch-slider::after { transform: translateX(14px); background: #e7f3e9; }
 
-/* ---------- кнопки ---------- */
+/* ---------- buttons ---------- */
 .btn {
   font: inherit;
   font-size: 14px;
@@ -213,8 +289,17 @@ input:focus, select:focus {
   color: var(--ink);
 }
 .btn-tool:hover { background: var(--accent-soft); border-color: var(--accent); }
+/* language switch: wider than the square tool buttons, it holds a code like EN */
+.btn-lang {
+  width: auto;
+  min-width: 40px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .4px;
+}
 
-/* ---------- таблица ---------- */
+/* ---------- table ---------- */
 .list-card {
   flex: 1 1 auto;
   display: flex;
@@ -262,7 +347,9 @@ tbody td {
 }
 
 tbody tr:last-child td { border-bottom: none; }
+tbody tr { cursor: pointer; }
 tbody tr:hover { background: #22263a; }
+tbody tr:hover .name-cell { color: var(--accent); }
 tbody tr.selected { background: var(--accent-soft); }
 tbody tr.focused { background: rgba(63, 143, 79, 0.22); }
 tbody tr.focused:hover { background: rgba(63, 143, 79, 0.3); }
@@ -284,13 +371,12 @@ tbody tr.focused:hover { background: rgba(63, 143, 79, 0.3); }
 }
 .edit-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
-.name-cell { cursor: pointer; }
-.name-cell:hover { color: var(--accent); }
+.name-cell { font-weight: 600; }
 
-/* ---------- дерево ---------- */
+/* ---------- tree ---------- */
 .right { min-height: 0; position: relative; }
 
-/* ушко: скрыть/показать левую панель, граф занимает всё место */
+/* side tab: hide or show the left panel so the graph takes the full width */
 .collapse-tab {
   position: absolute;
   left: -13px;
@@ -313,7 +399,7 @@ tbody tr.focused:hover { background: rgba(63, 143, 79, 0.3); }
 .app { transition: grid-template-columns .25s; }
 .app.collapsed { grid-template-columns: 0 1fr; }
 .app.collapsed .left { display: none; }
-.app.collapsed .right { grid-column: 2; } /* иначе граф встаёт в нулевую первую колонку */
+.app.collapsed .right { grid-column: 2; } /* otherwise the graph lands in the collapsed first column */
 
 .tree-card {
   height: 100%;
@@ -360,9 +446,64 @@ tbody tr.focused:hover { background: rgba(63, 143, 79, 0.3); }
 }
 .hidden { display: none !important; }
 
-/* ноды и рёбра рисуются WebGL-графом (3d-force-graph), см. app.js */
+/* nodes and edges are drawn by the WebGL graph (3d-force-graph), see app.js */
 
-/* предупреждение о недоступном сервере БД */
+/* ---------- classic chart (chart.js) ---------- */
+.tree-chart { position: absolute; inset: 0; }
+.chart-svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.chart-svg.is-dragging { cursor: grabbing; }
+
+/* right-angle connectors between generations */
+.chart-wires path {
+  fill: none;
+  stroke: var(--chart-wire);
+  stroke-width: 1.6;
+  stroke-linecap: square;
+}
+
+/* the bar joining a couple who have no children to connect them */
+.chart-bar {
+  fill: none;
+  stroke: var(--chart-marriage);
+  stroke-width: 2.2;
+}
+.chart-bar.ex { stroke: var(--chart-wire); stroke-dasharray: 5 4; }
+
+.chart-node { cursor: pointer; }
+.chart-box {
+  fill: var(--chart-box);
+  stroke: var(--chart-box-edge);
+  stroke-width: 1.4;
+  transition: fill .12s, stroke .12s;
+}
+.chart-node:hover .chart-box { fill: var(--chart-box-hover); stroke: var(--chart-selected); }
+.chart-node.is-selected .chart-box { stroke: var(--chart-selected); stroke-width: 2.4; }
+.chart-node.is-focus .chart-box { stroke: var(--chart-focus); stroke-width: 2.6; }
+.chart-node.is-dead .chart-box { stroke-dasharray: 4 3; }
+
+.chart-name {
+  fill: var(--chart-name);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.chart-given {
+  fill: var(--chart-name);
+  font-size: 11.5px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.chart-dates {
+  fill: var(--chart-dates);
+  font-size: 10.5px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.chart-node.is-dead .chart-given { fill: var(--chart-dates); }
+.chart-node.is-dead .chart-name { fill: var(--chart-dates); }
+
+/* warning shown when the database server is unreachable */
 .server-warning {
   position: fixed;
   left: 50%;
@@ -386,7 +527,7 @@ tbody tr.focused:hover { background: rgba(63, 143, 79, 0.3); }
   border-radius: 5px;
 }
 
-/* ---------- адаптив ---------- */
+/* ---------- responsive ---------- */
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; height: auto; }
   .right, .tree-card { height: 70vh; }
