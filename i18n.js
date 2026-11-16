@@ -38,6 +38,7 @@ let lang = (() => {
 const STRINGS = {
   ru: {
     'app.title': 'Семейное древо',
+    'app.splitter': 'Потяните, чтобы поменять ширину панелей. Двойной клик вернёт поровну',
     'app.langNext': 'Switch to English',
 
     'form.new': 'Новый человек',
@@ -50,6 +51,8 @@ const STRINGS = {
     'form.birthPlace': 'Место рождения',
     'form.notes': 'Заметки',
     'form.deathDate': 'Дата смерти',
+    'form.deceased': 'Умер(ла)',
+    'form.deceasedTitle': 'Отметьте, если человек умер, а дата неизвестна',
     'form.relative': 'Родственник',
     'form.relative2': 'Родственник 2',
     'form.relationIs': 'Он(а) приходится',
@@ -106,10 +109,14 @@ const STRINGS = {
     'table.middleName': 'Отчество',
     'table.gender': 'Пол',
     'table.birth': 'Рождение',
+    'table.age': 'Возраст',
     'table.birthPlace': 'Место',
     'table.death': 'Смерть',
     'table.status': 'Статус',
     'table.empty': 'Пока никого нет',
+    'table.search': 'Поиск',
+    'table.searchTitle': 'Фамилия, девичья фамилия, имя или отчество',
+    'table.noMatch': 'Никого не нашли',
     'table.edit': 'Изменить',
 
     'gender.m': 'М',
@@ -126,6 +133,7 @@ const STRINGS = {
     'tree.toTreeTitle': 'Разложить по поколениям',
     'tree.toGraphTitle': 'Свободная раскладка',
     'tree.empty': 'Добавьте первого человека в форме слева',
+    'chart.failed': 'Не удалось нарисовать древо. Граф работает, подробности в консоли браузера (F12).',
     'tree.noData': 'Нет данных',
 
     'err.nameRequired': 'Укажите хотя бы имя или фамилию',
@@ -138,17 +146,29 @@ const STRINGS = {
     'err.twoParents': 'У {name} уже указано два родителя',
     'err.cycle': 'Такая связь создаёт замкнутый круг в древе',
 
-    'server.warning': 'Нет связи с сервером БД. Запустите {cmd} в папке сайта. ' +
+    'server.warning': 'Нет связи с сервером. Запустите {cmd} в папке сайта. ' +
       'Пока данные сохраняются только в браузере!',
     'server.stale': 'Сервер работает на старом коде. Перезапустите его ({cmd}): ' +
-      'новые поля он молча выбрасывает и в базу они не попадут. ' +
+      'новые поля он молча выбрасывает и в файл данных они не попадут. ' +
       'Полная копия пока лежит в браузере.',
+
+    'data.download': 'Скачать',
+    'data.downloadTitle': 'Скачать всё древо одним JSON-файлом',
+    'data.import': 'Загрузить',
+    'data.importTitle': 'Заменить древо данными из JSON-файла',
+    'import.bad': 'Это не файл древа: нужен JSON со списком people, у каждого человека свой id.',
+    'import.offline': 'Загрузка работает только с запущенным сервером: ' +
+      'перед заменой он сохраняет резервную копию.',
+    'import.confirm': 'Заменить текущее древо ({now} чел.) древом из файла ({next} чел.)? ' +
+      'Текущее сначала сохранится в data/backups/.',
+    'import.failed': 'Сервер не принял файл: {error}',
 
     'life.born': 'р.',
   },
 
   en: {
     'app.title': 'Family Tree',
+    'app.splitter': 'Drag to resize the panels. Double-click to split them evenly',
     'app.langNext': 'Переключить на русский',
 
     'form.new': 'New person',
@@ -161,6 +181,8 @@ const STRINGS = {
     'form.birthPlace': 'Place of birth',
     'form.notes': 'Notes',
     'form.deathDate': 'Date of death',
+    'form.deceased': 'Deceased',
+    'form.deceasedTitle': 'Mark if the person died and the date is unknown',
     'form.relative': 'Relative',
     'form.relative2': 'Relative 2',
     'form.relationIs': 'They are the',
@@ -217,10 +239,14 @@ const STRINGS = {
     'table.middleName': 'Patronymic',
     'table.gender': 'Sex',
     'table.birth': 'Born',
+    'table.age': 'Age',
     'table.birthPlace': 'Place',
     'table.death': 'Died',
     'table.status': 'Relation',
     'table.empty': 'Nobody here yet',
+    'table.search': 'Search',
+    'table.searchTitle': 'Last name, maiden name, first name or patronymic',
+    'table.noMatch': 'Nobody matches',
     'table.edit': 'Edit',
 
     'gender.m': 'M',
@@ -237,6 +263,7 @@ const STRINGS = {
     'tree.toTreeTitle': 'Lay out by generation',
     'tree.toGraphTitle': 'Free layout',
     'tree.empty': 'Add the first person using the form on the left',
+    'chart.failed': 'The chart could not be drawn. The graph still works; details are in the browser console (F12).',
     'tree.noData': 'No data',
 
     'err.nameRequired': 'Enter at least a first name or a last name',
@@ -249,11 +276,22 @@ const STRINGS = {
     'err.twoParents': '{name} already has two parents',
     'err.cycle': 'That link would create a loop in the tree',
 
-    'server.warning': 'No connection to the database server. Run {cmd} in the site folder. ' +
+    'server.warning': 'No connection to the server. Run {cmd} in the site folder. ' +
       'Until then data is saved in the browser only!',
     'server.stale': 'The server is running old code. Restart it ({cmd}): it drops ' +
-      'the newer fields without a word and they will never reach the database. ' +
+      'the newer fields without a word and they will never reach the data file. ' +
       'A full copy is in the browser meanwhile.',
+
+    'data.download': 'Download',
+    'data.downloadTitle': 'Download the whole tree as one JSON file',
+    'data.import': 'Import',
+    'data.importTitle': 'Replace the tree with one from a JSON file',
+    'import.bad': 'This is not a tree file: it needs JSON with a people list, each person with an id.',
+    'import.offline': 'Import needs the server running: ' +
+      'it backs up the current tree before replacing it.',
+    'import.confirm': 'Replace the current tree ({now} people) with the one in the file ({next} people)? ' +
+      'The current tree is backed up to data/backups/ first.',
+    'import.failed': 'The server did not accept the file: {error}',
 
     'life.born': 'b.',
   },

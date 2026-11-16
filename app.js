@@ -1,8 +1,10 @@
 /* ============================================================
    Family tree: application logic
-   Data: localStorage, key familyTree.people.v1
+   Data: data/family.json through server.py, backup copy in localStorage
    Person: { id, lastName, maidenName, firstName, middleName,
-             birthDate, deathDate, gender, focus, parents: [id, ...] }
+             birthDate, deathDate, deceased, gender, focus, parents: [id, ...],
+             birthPlace, notes }
+   deceased marks someone dead with no known date; a deathDate implies it
    Dates are strings 'YYYY' | 'MM-YYYY' | 'DD-MM-YYYY' (may be partial)
 
    Interface text and kinship words live in i18n.js. Kinship is never
@@ -20,14 +22,16 @@ const VIEW_KEY = 'familyTree.view.v1';           // 'graph' or 'tree'
 // Must match SCHEMA in server.py. A server on older code answers requests
 // normally and silently discards fields it does not know, so a mismatch is
 // treated as a fault rather than shrugged off.
-const NEEDS_SCHEMA = 1;
-const MIGRATED_KEY = 'familyTree.migrated.v1';   // flag: migrated to SQLite
+const NEEDS_SCHEMA = 2;
+const MIGRATED_KEY = 'familyTree.migrated.v1';   // flag: browser data moved to the server
 // Talk to the server that served this page, so an instance started on another
-// port with its own database is self-contained. Only a page opened straight
+// port with its own data file is self-contained. Only a page opened straight
 // from disk (file://) has no usable origin and falls back to the default port.
-const API_URL = location.protocol.startsWith('http')
-  ? `${location.origin}/api/tree`
-  : 'http://localhost:8791/api/tree';
+const API_BASE = location.protocol.startsWith('http')
+  ? `${location.origin}/api`
+  : 'http://localhost:8791/api';
+const API_URL = `${API_BASE}/tree`;
+const IMPORT_URL = `${API_BASE}/import`;   // like a save, but backs up the current tree first
 
 /* ---------- state ---------- */
 let people = [];
@@ -74,6 +78,7 @@ const formTitle = $('formTitle');
 const submitBtn = $('submitBtn');
 const cancelBtn = $('cancelBtn');
 const focusToggle = $('focusToggle');
+const deceasedToggle = $('deceasedToggle');
 const relativesBox = $('relativesBox');
 const relativesChips = $('relativesChips');
 const marriageBox = $('marriageBox');
@@ -87,6 +92,7 @@ const divMonthEl = $('divMonth');
 const divYearEl = $('divYear');
 const tbody = $('peopleTbody');
 const peopleCount = $('peopleCount');
+const peopleSearch = $('peopleSearch');
 const tree3d = $('tree3d');
 const treeEmpty = $('treeEmpty');
 const treeViewport = $('treeViewport');
@@ -94,10 +100,13 @@ const serverWarning = $('serverWarning');
 const langToggle = $('langToggle');
 const viewToggle = $('viewToggle');
 const treeChart = $('treeChart');
+const downloadBtn = $('downloadBtn');
+const importBtn = $('importBtn');
+const importFile = $('importFile');
 
 /* ============================================================
-   Storage: SQLite on the local server (server.py) is the primary store,
-   with a backup copy in the browser localStorage.
+   Storage: a JSON file behind the local server (server.py) is the primary
+   store, with a backup copy in the browser localStorage.
    ============================================================ */
 // Reads the browser backup. v1 stored a bare array of people with no
 // marriages, so an older backup is accepted and lifted into the new shape.
@@ -191,24 +200,82 @@ function save() {
     .catch(() => { useServer = false; setBanner('offline'); });
 }
 
-// Startup load plus a one-time localStorage -> SQLite migration
-async function boot() {
-  ({ people, marriages } = await loadTree());
-  if (useServer && people.length === 0 && !localStorage.getItem(MIGRATED_KEY)) {
-    const legacy = loadLocal();
-    if (legacy.people.length) {
-      people = legacy.people;
-      marriages = legacy.marriages;
-      try {
-        await saveToServer(); // move into SQLite without losing anything
-      } catch {
-        setBanner('offline');
-      }
-    }
-    localStorage.setItem(MIGRATED_KEY, '1');
+/* ---------- download and import ---------- */
+// The file has the shape the server stores, so a download comes back in
+// through import unchanged.
+function downloadTree() {
+  const doc = { schema: NEEDS_SCHEMA, people, marriages };
+  const blob = new Blob([JSON.stringify(doc, null, 2) + '\n'], { type: 'application/json' });
+  const d = new Date();
+  const day = [d.getFullYear(), d.getMonth() + 1, d.getDate()]
+    .map((n) => String(n).padStart(2, '0'))
+    .join('-');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `family-tree-${day}.json`;
+  a.click();
+  // some browsers read the blob after click() returns, so free it a moment later
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Replaces the whole tree with a downloaded one, so it asks first. It works
+// through the server only, because the server backs up the current tree
+// before writing. A v1 file holds a bare array of people and is accepted too.
+async function importTree(file) {
+  let doc = null;
+  try {
+    doc = JSON.parse(await file.text());
+  } catch {
+    // not JSON at all: reported below like any other wrong file
   }
+  if (Array.isArray(doc)) doc = { people: doc, marriages: [] };
+  if (!doc || !Array.isArray(doc.people) || !doc.people.every((p) => p && p.id)) {
+    alert(t('import.bad'));
+    return;
+  }
+  if (!useServer) {
+    alert(t('import.offline'));
+    return;
+  }
+  if (!confirm(t('import.confirm', { now: people.length, next: doc.people.length }))) return;
+  let r;
+  try {
+    r = await fetch(IMPORT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ people: doc.people, marriages: Array.isArray(doc.marriages) ? doc.marriages : [] }),
+    });
+  } catch {
+    setBanner('offline');
+    alert(t('import.offline'));
+    return;
+  }
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    alert(t('import.failed', { error: body.error || r.status }));
+    return;
+  }
+  // read back what the server kept rather than trust the file as sent
+  ({ people, marriages } = await loadTree());
+  settleTree();
+  saveLocal();
+  resetForm();
+  renderAll();
+}
+
+downloadBtn.addEventListener('click', downloadTree);
+importBtn.addEventListener('click', () => importFile.click());
+importFile.addEventListener('change', () => {
+  const [file] = importFile.files;
+  importFile.value = ''; // so picking the same file again still fires change
+  if (file) importTree(file);
+});
+
+// Tidies a freshly loaded tree: drops marriages to people who are gone and
+// fills in gender where it is missing (inferred from patronymic or first name).
+// Saves only if gender was filled, because that is the only change worth keeping.
+function settleTree() {
   marriages = marriages.filter((m) => byId(m.a) && byId(m.b) && m.a !== m.b);
-  // fill in gender where it is missing (inferred from patronymic or first name)
   let genderFilled = false;
   for (const p of people) {
     if (!p.gender) {
@@ -217,6 +284,25 @@ async function boot() {
     }
   }
   if (genderFilled) save();
+}
+
+// Startup load plus a one-time move of browser-only data to the server
+async function boot() {
+  ({ people, marriages } = await loadTree());
+  if (useServer && people.length === 0 && !localStorage.getItem(MIGRATED_KEY)) {
+    const legacy = loadLocal();
+    if (legacy.people.length) {
+      people = legacy.people;
+      marriages = legacy.marriages;
+      try {
+        await saveToServer(); // move to the server without losing anything
+      } catch {
+        setBanner('offline');
+      }
+    }
+    localStorage.setItem(MIGRATED_KEY, '1');
+  }
+  settleTree();
   I18n.applyStatic();
   renderLangButton();
   renderViewButton();
@@ -248,6 +334,20 @@ for (const el of [birthDayEl, birthMonthEl, birthYearEl, deathDayEl, deathMonthE
                   marDayEl, marMonthEl, marYearEl, divDayEl, divMonthEl, divYearEl]) {
   el.addEventListener('input', () => { el.value = el.value.replace(/\D/g, ''); });
 }
+
+// The deceased switch as the user set it, apart from any death date.
+let deceasedChosen = false;
+
+// A death date already says the person died, so the switch is locked on while
+// any part of one is filled in. Clearing the date gives back the user's choice.
+function syncDeceasedToggle() {
+  const hasDate = [deathDayEl, deathMonthEl, deathYearEl].some((el) => el.value.trim());
+  deceasedToggle.disabled = hasDate;
+  deceasedToggle.checked = hasDate || deceasedChosen;
+}
+
+for (const el of [deathDayEl, deathMonthEl, deathYearEl]) el.addEventListener('input', syncDeceasedToggle);
+deceasedToggle.addEventListener('change', () => { deceasedChosen = deceasedToggle.checked; });
 
 // Build a date string from the three fields.
 // Returns '' (all empty) | a date string | undefined (invalid).
@@ -667,12 +767,38 @@ function computeStatuses(focus) {
   return term;
 }
 
+function isDeceased(p) {
+  return !!(p.deceased || p.deathDate);
+}
+
+// Age of someone alive, from as much of the birth date as is known. With only
+// a year, or a birth month that is the current one, the birthday may still be
+// ahead, so the age is marked approximate. Empty for the dead, for no birth
+// date, and for a date in the future.
+function ageOf(p, today = new Date()) {
+  if (isDeceased(p) || !p.birthDate) return '';
+  const [y, m, d] = p.birthDate.split('-').reverse().map(Number);
+  if (!y) return '';
+  const month = today.getMonth() + 1;
+  let age = today.getFullYear() - y;
+  let sure = true;
+  if (!m) sure = false;
+  else if (month < m) age -= 1;
+  else if (month === m) {
+    if (!d) sure = false;
+    else if (today.getDate() < d) age -= 1;
+  }
+  if (age < 0) return '';
+  return sure ? String(age) : `~${age}`;
+}
+
+// A cross stands in for a death date nobody knows.
 function lifeDates(p) {
   const b = p.birthDate || '';
-  const d = p.deathDate || '';
+  const d = p.deathDate || (isDeceased(p) ? '†' : '');
   if (b && d) return `${b} — ${d}`;
   if (b) return `${t('life.born')} ${b}`;
-  if (d) return `† ${d}`;
+  if (d) return p.deathDate ? `† ${d}` : d;
   return '';
 }
 
@@ -702,6 +828,8 @@ function resetForm() {
   editingId = null;
   closeMarriage();
   form.reset();
+  deceasedChosen = false;
+  syncDeceasedToggle();
   renderFormChrome();
   cancelBtn.classList.add('hidden');
   relativesBox.classList.add('hidden');
@@ -722,6 +850,8 @@ function startEdit(id) {
   notesEl.value = p.notes || '';
   fillDateParts(birthDayEl, birthMonthEl, birthYearEl, p.birthDate);
   fillDateParts(deathDayEl, deathMonthEl, deathYearEl, p.deathDate);
+  deceasedChosen = isDeceased(p);
+  syncDeceasedToggle();
   renderFormChrome();
   cancelBtn.classList.remove('hidden');
   clearError();
@@ -789,6 +919,7 @@ form.addEventListener('submit', (e) => {
     p.birthPlace = birthPlace;
     p.notes = notes;
     p.deathDate = death;
+    p.deceased = deceasedToggle.checked;
     if (focusToggle.checked) setFocus(p.id, true);
     save();
     resetForm();
@@ -801,6 +932,7 @@ form.addEventListener('submit', (e) => {
       birthPlace,
       notes,
       deathDate: death,
+      deceased: deceasedToggle.checked,
       parents: [],
     };
     try {
@@ -813,7 +945,6 @@ form.addEventListener('submit', (e) => {
     if (focusToggle.checked) setFocus(person.id, true);
     save();
     resetForm();
-    fitRequested = true; // fit the graph into view once the simulation stops
     renderAll();
   }
 });
@@ -1039,14 +1170,31 @@ function compareBy(key) {
   };
 }
 
+// Search folds case and ё, so "семен" finds Семён.
+const foldName = (s) => (s || '').toLowerCase().replaceAll('ё', 'е');
+
+// Every word of the query must start one of the person's names: "ив пет"
+// finds Иван Петрович and Петрова Ирина Ивановна, but "ван" finds no Иван.
+function matchesSearch(p, words) {
+  const parts = [p.lastName, p.maidenName, p.firstName, p.middleName]
+    .flatMap((name) => foldName(name).split(/[\s-]+/))
+    .filter(Boolean);
+  return words.every((w) => parts.some((part) => part.startsWith(w)));
+}
+
 function renderTable() {
-  peopleCount.textContent = people.length ? `(${people.length})` : '';
+  const words = foldName(peopleSearch.value).split(/[\s-]+/).filter(Boolean);
+  const shown = words.length ? people.filter((p) => matchesSearch(p, words)) : people;
+  peopleCount.textContent = !people.length ? ''
+    : shown.length === people.length ? `(${people.length})`
+    : `(${shown.length} / ${people.length})`;
   tbody.innerHTML = '';
 
-  if (!people.length) {
-    tbody.innerHTML = `<tr class="row-empty"><td colspan="10">${escapeHtml(t('table.empty'))}</td></tr>`;
+  if (!shown.length) {
+    const msg = people.length ? t('table.noMatch') : t('table.empty');
+    tbody.innerHTML = `<tr class="row-empty"><td colspan="11">${escapeHtml(msg)}</td></tr>`;
   } else {
-    const sorted = [...people].sort(compareBy(sortState.key));
+    const sorted = [...shown].sort(compareBy(sortState.key));
     const focusP = people.find((p) => p.focus) || null;
     const statusMap = focusP ? computeStatuses(focusP) : null;
     for (const p of sorted) {
@@ -1061,8 +1209,9 @@ function renderTable() {
         <td>${escapeHtml(p.middleName)}</td>
         <td>${escapeHtml(genderLabel(p))}</td>
         <td>${escapeHtml(p.birthDate)}</td>
+        <td>${escapeHtml(ageOf(p))}</td>
         <td>${escapeHtml(p.birthPlace || '')}</td>
-        <td>${escapeHtml(p.deathDate)}</td>
+        <td>${escapeHtml(p.deathDate || (isDeceased(p) ? '†' : ''))}</td>
         <td>${escapeHtml(statusMap ? renderTerm(statusMap.get(p.id)) : '')}</td>
         <td></td>`;
       // Clicking anywhere on the row opens that person for editing and points
@@ -1101,6 +1250,8 @@ document.querySelectorAll('#peopleTable th.sortable').forEach((th) => {
   });
 });
 
+peopleSearch.addEventListener('input', renderTable);
+
 /* ============================================================
    Tree: a 3D force graph, the same approach as in mf-lab
    (3d-force-graph + three-spritetext, physical layout:
@@ -1122,60 +1273,6 @@ let fitRequested = true;
 const highlightedLinks = new Set();
 const highlightedNodes = new Set();
 
-// Generation of every person: 0 with no parents in the tree, otherwise one
-// past the deepest parent. Spouses are pulled onto the same generation so a
-// couple sits side by side even when one of them married in from nowhere.
-function generationLevels() {
-  const level = new Map(people.map((p) => [p.id, 0]));
-  const kids = new Map(people.map((p) => [p.id, []]));
-  for (const p of people) {
-    for (const pid of p.parents) if (kids.has(pid)) kids.get(pid).push(p.id);
-  }
-
-  // Pairs that have to share a generation. A recorded marriage is one, and so
-  // is sharing a child: a wife with no parents of her own would otherwise stay
-  // at the top while her husband moved down as his own parents were added.
-  const pairs = [];
-  for (const m of marriages) {
-    if (level.has(m.a) && level.has(m.b)) pairs.push([m.a, m.b]);
-  }
-  for (const p of people) {
-    const ps = p.parents.filter((id) => level.has(id));
-    for (let i = 1; i < ps.length; i++) pairs.push([ps[0], ps[i]]);
-  }
-
-  // Relax until nothing moves. Every rule only ever pushes someone further
-  // down the page, and the constraints agree at the point where a parent sits
-  // exactly one row above their nearest child, so this settles; the counter is
-  // a guard rather than the real bound.
-  for (let guard = 0; guard <= people.length * 2 + 8; guard++) {
-    let changed = false;
-    // a child sits below its deepest parent
-    for (const p of people) {
-      for (const pid of p.parents) {
-        if (!level.has(pid)) continue;
-        const want = level.get(pid) + 1;
-        if (want > level.get(p.id)) { level.set(p.id, want); changed = true; }
-      }
-    }
-    // a parent sits directly above its nearest child, so parents-in-law follow
-    // a daughter who was pulled down to sit beside the person she married
-    for (const p of people) {
-      const cs = kids.get(p.id);
-      if (!cs.length) continue;
-      const want = Math.min(...cs.map((c) => level.get(c))) - 1;
-      if (want > level.get(p.id)) { level.set(p.id, want); changed = true; }
-    }
-    for (const [a, b] of pairs) {
-      const hi = Math.max(level.get(a), level.get(b));
-      if (level.get(a) !== hi) { level.set(a, hi); changed = true; }
-      if (level.get(b) !== hi) { level.set(b, hi); changed = true; }
-    }
-    if (!changed) break;
-  }
-  return level;
-}
-
 function graphDataFromPeople() {
   const ids = new Set(people.map((p) => p.id));
   const nodes = people.map((p) => ({
@@ -1184,8 +1281,8 @@ function graphDataFromPeople() {
     dates: lifeDates(p),
     place: p.birthPlace || '',
     notes: p.notes || '',
-    color: p.deathDate ? COLOR_DEAD : COLOR_ALIVE,
-    deceased: !!p.deathDate,
+    color: isDeceased(p) ? COLOR_DEAD : COLOR_ALIVE,
+    deceased: isDeceased(p),
     focus: !!p.focus,
   }));
   const links = [];
@@ -1202,6 +1299,11 @@ function graphDataFromPeople() {
   }
   return { nodes, links };
 }
+
+const NODE_RADIUS = 6; // nodeRelSize(4) * cbrt(nodeVal 3), rounded up
+// a bare sphere, before its labels are measured
+const NODE_EXTENT = { half: NODE_RADIUS, up: NODE_RADIUS, down: NODE_RADIUS };
+const FIT_MARGIN = 1.06; // a little air around the framed graph
 
 // node label: full name above the sphere, life dates below it
 function makeNodeObject(n) {
@@ -1220,6 +1322,14 @@ function makeNodeObject(n) {
     dates.textHeight = 4.6;
     dates.position.y = -12;
     group.add(dates);
+  }
+  // How far the sphere and its labels reach around the node centre, so
+  // fitCamera can keep whole names in view rather than just the spheres.
+  n.extent = { ...NODE_EXTENT };
+  for (const s of group.children) {
+    n.extent.half = Math.max(n.extent.half, s.scale.x / 2);
+    n.extent.up = Math.max(n.extent.up, s.position.y + s.scale.y / 2);
+    n.extent.down = Math.max(n.extent.down, s.scale.y / 2 - s.position.y);
   }
   return group;
 }
@@ -1267,10 +1377,16 @@ function initTree() {
     // interaction
     .onNodeHover(handleNodeHover)
     .onNodeClick(handleNodeClick)
+    // Lay the graph out before the first frame, and stop once it has settled.
+    // The default never stops early and runs a full 15 s, and the camera
+    // frames everyone only when it stops, so until then the outer people
+    // sat off-screen.
+    .warmupTicks(200)
+    .d3AlphaMin(0.005)
     .onEngineStop(() => {
       if (fitRequested) {
         fitRequested = false;
-        fitCamera(0);
+        fitCamera(600);
       }
     });
 
@@ -1282,7 +1398,7 @@ function initTree() {
 new ResizeObserver(sizeTree).observe(treeViewport);
 
 function sizeTree() {
-  if (chart) chart.fit();
+  if (chart) chart.resize();
   if (!Graph) return;
   Graph.width(treeViewport.clientWidth).height(treeViewport.clientHeight);
 }
@@ -1344,6 +1460,9 @@ function focusOnPerson(id) {
 
 // fit the graph into view using the simulation bounding box
 // (the equivalent of fitMemoryTreeCameraFromSimulationLayout in mf-lab)
+// Frames everyone, labels included, looking straight down the z axis. The
+// distance comes from the camera's field of view and the panel's shape, so a
+// tall narrow panel backs the camera off far enough for the widest names.
 function fitCamera(ms = 800) {
   if (!Graph) return;
   const nodes = Graph.graphData().nodes.filter((n) => n.x !== undefined);
@@ -1351,15 +1470,26 @@ function fitCamera(ms = 800) {
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (const n of nodes) {
-    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    const e = n.extent || NODE_EXTENT;
+    minX = Math.min(minX, n.x - e.half); maxX = Math.max(maxX, n.x + e.half);
+    minY = Math.min(minY, n.y - e.down); maxY = Math.max(maxY, n.y + e.up);
     minZ = Math.min(minZ, n.z); maxZ = Math.max(maxZ, n.z);
   }
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const cz = (minZ + maxZ) / 2;
-  const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
-  const dist = Math.min(1200, Math.max(220, size * 1.5 + 120));
+  const tan = Math.tan((Graph.camera().fov * Math.PI) / 360);
+  const aspect = treeViewport.clientWidth / Math.max(1, treeViewport.clientHeight);
+  // Each person needs the camera far enough back that their label fits the
+  // view at their own depth: someone nearer the camera needs more room.
+  let dist = 220;
+  for (const n of nodes) {
+    const e = n.extent || NODE_EXTENT;
+    const ahead = n.z - cz;
+    const across = (Math.abs(n.x - cx) + e.half) * FIT_MARGIN;
+    const upDown = Math.max(n.y + e.up - cy, cy - n.y + e.down) * FIT_MARGIN;
+    dist = Math.max(dist, across / (tan * aspect) + ahead, upDown / tan + ahead);
+  }
   Graph.cameraPosition({ x: cx, y: cy, z: cz + dist }, { x: cx, y: cy, z: cz }, ms);
 }
 
@@ -1433,15 +1563,79 @@ $('collapseTab').addEventListener('click', () => {
   sizeTree(); // the graph takes the freed space (ResizeObserver fires too)
 });
 
+// Divider between the panels. The left panel's width is kept as a share of
+// the page, so it scales with the window; the CSS clamps it to sane minimums.
+const LEFT_SHARE_KEY = 'familyTree.leftShare.v1';
+const appEl = document.querySelector('.app');
+const splitter = $('splitter');
+
+function setLeftShare(share) {
+  appEl.style.setProperty('--left-share', `${(share * 100).toFixed(2)}%`);
+}
+
+try {
+  const saved = parseFloat(localStorage.getItem(LEFT_SHARE_KEY));
+  if (saved > 0 && saved < 1) setLeftShare(saved);
+} catch {
+  // storage disabled: start at the default split
+}
+
+// The divider grabs the pointer on press. That is safe here, unlike on the
+// chart, because nothing inside it needs the click.
+splitter.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  splitter.setPointerCapture(e.pointerId);
+  appEl.classList.add('resizing');
+});
+
+splitter.addEventListener('pointermove', (e) => {
+  if (!splitter.hasPointerCapture(e.pointerId)) return;
+  const style = getComputedStyle(appEl);
+  const r = appEl.getBoundingClientRect();
+  const padLeft = parseFloat(style.paddingLeft);
+  const inner = r.width - padLeft - parseFloat(style.paddingRight);
+  // the pointer sits in the middle of the gap, half a gap right of the panel
+  const left = e.clientX - r.left - padLeft - parseFloat(style.columnGap) / 2;
+  setLeftShare(Math.min(0.95, Math.max(0.05, left / inner)));
+});
+
+function endResize(e) {
+  if (!splitter.hasPointerCapture(e.pointerId)) return;
+  splitter.releasePointerCapture(e.pointerId);
+  appEl.classList.remove('resizing');
+  try {
+    const share = parseFloat(appEl.style.getPropertyValue('--left-share')) / 100;
+    if (share) localStorage.setItem(LEFT_SHARE_KEY, share.toFixed(4));
+  } catch {
+    // storage disabled: the width just will not survive a reload
+  }
+}
+splitter.addEventListener('pointerup', endResize);
+splitter.addEventListener('pointercancel', endResize);
+
+splitter.addEventListener('dblclick', () => {
+  appEl.style.removeProperty('--left-share');
+  try {
+    localStorage.removeItem(LEFT_SHARE_KEY);
+  } catch {
+    // storage disabled: nothing was saved anyway
+  }
+});
+
 // The classic chart: boxes in generation rows joined by right-angle lines.
 // Everyone is drawn, so a spouse who married in brings their own parents and
 // grandparents with them and the two lines meet at the marriage bar.
 function renderChart() {
   const focused = people.find((p) => p.focus) || null;
+  // A save redraws the chart. Hand the old pan and zoom to the new one, so
+  // editing never throws the view back to the whole tree. Only a fresh chart
+  // or the fit button frames everyone.
+  const keep = chart ? chart.view() : null;
   chart = FamilyChart.render(treeChart, {
+    view: keep,
     people,
     marriages,
-    levels: generationLevels(),
     nameOf: fullName,
     labelOf: (p) => ({
       surname: p.maidenName
@@ -1450,9 +1644,10 @@ function renderChart() {
       given: [p.firstName, p.middleName].filter(Boolean).join(' '),
     }),
     datesOf: lifeDates,
+    deceasedOf: isDeceased,
     placeOf: (p) => p.birthPlace || '',
     noteOf: (p) => p.notes || '',
-    labels: { marriage: t('marriage.title'), divorced: t('chip.exSpouse') },
+    labels: { marriage: t('marriage.title'), divorced: t('chip.exSpouse'), failed: t('chart.failed') },
     focusId: focused ? focused.id : null,
     selectedId,
     onPick: (id) => {
@@ -1484,10 +1679,11 @@ function renderTree() {
   treeChart.textContent = '';
   if (!Graph) initTree();
   sizeTree(); // the container had no width while the chart was showing
-  Graph.graphData(graphDataFromPeople());
-  // physics, as in mf-lab: charge adapts to the node count
+  // physics, as in mf-lab: charge adapts to the node count. Set before the
+  // data, because graphData() runs the warm-up ticks with whatever is set.
   Graph.d3Force('charge').strength(-260 * Math.sqrt(Math.max(1, people.length) / 100));
   Graph.d3Force('link').distance(110);
+  Graph.graphData(graphDataFromPeople());
 }
 
 /* ============================================================

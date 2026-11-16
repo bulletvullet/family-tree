@@ -5,38 +5,40 @@ Only the things that have already gone wrong here. Everything else is in
 
 ## Never test against the live app
 
-`make run` owns **port 8791** and the real **`data/family.db`**. A POST to
-`/api/tree` replaces the whole tree in one transaction, so one stray request
-wipes everything. That has already happened.
+`make run` owns **port 8791** and the real **`data/family.json`**. A POST to
+`/api/tree` replaces the whole file, so one stray request wipes everything.
+That has already happened.
 
 ```bash
 make test-server     # port 8799, .test-data/, real data untouched
-make test-reset      # delete that database
+make test-reset      # delete that data
 ```
 
 **Check what is answering before you write.** Aiming at another port is not
 enough: a server that fails to bind leaves the previous one answering. That is
 exactly how the data was lost. A test server could not take 8791, nobody
-checked, every request after it hit the real database.
+checked, every request after it hit the real data.
 
 ```bash
 pid=$(ss -lptn 'sport = :8799' | grep -oP 'pid=\K[0-9]+' | head -1)
-tr '\0' '\n' < /proc/$pid/environ | grep FAMILY_TREE_DB
-# expect: FAMILY_TREE_DB=.test-data/family.db
+tr '\0' '\n' < /proc/$pid/environ | grep FAMILY_TREE_DATA
+# expect: FAMILY_TREE_DATA=.test-data/family.json
 ```
 
 Not what you expect? Stop. Do not send the request.
 
 `data/` is read-only. Never `rm -rf` it, and never assume it is absent because
 it was a minute ago, because the user starts their own server mid-session. To
-test a migration on the real schema, copy the file and point a test server at
-the copy.
+test on real data, copy `data/family.json` into `.test-data/` and point a test
+server at the copy. Keep `data/family.db`: it is the copy from before the
+move to JSON.
 
 If you do break it, a check made after your own write proves nothing: your
-request has already overwritten those pages. The only other copy is
+request has already overwritten the file. Look in `data/backups/` first, but
+the newest backup can miss up to a day of edits. The other copy is
 `localStorage` under `familyTree.tree.v2`, and the next save destroys it.
 
-## Two ways broken code passes here
+## Three ways broken code passes here
 
 - `dispatchEvent(new MouseEvent('click'))` skips the pointer pipeline, so it
   passes on code a real click cannot reach. It hid a pointer-capture bug that
@@ -46,8 +48,14 @@ request has already overwritten those pages. The only other copy is
   exist, which is how the public page shipped calls to two functions it did
   not define. Compare defined against used when moving code between `app.js`
   and `deploy/tree/tree.js`.
+- The chart orders branches two ways: every order for up to six branches
+  linked by marriage, one at a time beyond that. A real tree crosses from one
+  to the other as it grows. The second way had a bug that no test data
+  reached, and it blanked the whole chart once the user's tree passed six.
+  `make test` generates trees of many sizes so both run. Run it after
+  touching `chart.js`.
 
-`make check` is a syntax gate, not a test suite.
+`make check` is a syntax gate. `make test` covers the chart layout only.
 
 ## Four things that are not obvious from the code
 

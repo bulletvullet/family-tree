@@ -45,12 +45,17 @@ function ellipsize(s, max) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
+function isDeceased(p) {
+  return !!(p.deceased || p.deathDate);
+}
+
+// A cross stands in for a death date nobody knows.
 function lifeDates(p) {
   const b = p.birthDate || '';
-  const d = p.deathDate || '';
+  const d = p.deathDate || (isDeceased(p) ? '†' : '');
   if (b && d) return `${b} — ${d}`;
   if (b) return `${t('life.born')} ${b}`;
-  if (d) return `† ${d}`;
+  if (d) return p.deathDate ? `† ${d}` : d;
   return '';
 }
 
@@ -72,60 +77,6 @@ let fitRequested = true;
 const highlightedLinks = new Set();
 const highlightedNodes = new Set();
 
-// Generation of every person: 0 with no parents in the tree, otherwise one
-// past the deepest parent. Spouses are pulled onto the same generation so a
-// couple sits side by side even when one of them married in from nowhere.
-function generationLevels() {
-  const level = new Map(people.map((p) => [p.id, 0]));
-  const kids = new Map(people.map((p) => [p.id, []]));
-  for (const p of people) {
-    for (const pid of p.parents) if (kids.has(pid)) kids.get(pid).push(p.id);
-  }
-
-  // Pairs that have to share a generation. A recorded marriage is one, and so
-  // is sharing a child: a wife with no parents of her own would otherwise stay
-  // at the top while her husband moved down as his own parents were added.
-  const pairs = [];
-  for (const m of marriages) {
-    if (level.has(m.a) && level.has(m.b)) pairs.push([m.a, m.b]);
-  }
-  for (const p of people) {
-    const ps = p.parents.filter((id) => level.has(id));
-    for (let i = 1; i < ps.length; i++) pairs.push([ps[0], ps[i]]);
-  }
-
-  // Relax until nothing moves. Every rule only ever pushes someone further
-  // down the page, and the constraints agree at the point where a parent sits
-  // exactly one row above their nearest child, so this settles; the counter is
-  // a guard rather than the real bound.
-  for (let guard = 0; guard <= people.length * 2 + 8; guard++) {
-    let changed = false;
-    // a child sits below its deepest parent
-    for (const p of people) {
-      for (const pid of p.parents) {
-        if (!level.has(pid)) continue;
-        const want = level.get(pid) + 1;
-        if (want > level.get(p.id)) { level.set(p.id, want); changed = true; }
-      }
-    }
-    // a parent sits directly above its nearest child, so parents-in-law follow
-    // a daughter who was pulled down to sit beside the person she married
-    for (const p of people) {
-      const cs = kids.get(p.id);
-      if (!cs.length) continue;
-      const want = Math.min(...cs.map((c) => level.get(c))) - 1;
-      if (want > level.get(p.id)) { level.set(p.id, want); changed = true; }
-    }
-    for (const [a, b] of pairs) {
-      const hi = Math.max(level.get(a), level.get(b));
-      if (level.get(a) !== hi) { level.set(a, hi); changed = true; }
-      if (level.get(b) !== hi) { level.set(b, hi); changed = true; }
-    }
-    if (!changed) break;
-  }
-  return level;
-}
-
 function graphDataFromPeople() {
   const ids = new Set(people.map((p) => p.id));
   const nodes = people.map((p) => ({
@@ -134,8 +85,8 @@ function graphDataFromPeople() {
     dates: lifeDates(p),
     place: p.birthPlace || '',
     notes: p.notes || '',
-    color: p.deathDate ? COLOR_DEAD : COLOR_ALIVE,
-    deceased: !!p.deathDate,
+    color: isDeceased(p) ? COLOR_DEAD : COLOR_ALIVE,
+    deceased: isDeceased(p),
     focus: !!p.focus,
   }));
   const links = [];
@@ -151,6 +102,11 @@ function graphDataFromPeople() {
   }
   return { nodes, links };
 }
+
+const NODE_RADIUS = 6; // nodeRelSize(4) * cbrt(nodeVal 3), rounded up
+// a bare sphere, before its labels are measured
+const NODE_EXTENT = { half: NODE_RADIUS, up: NODE_RADIUS, down: NODE_RADIUS };
+const FIT_MARGIN = 1.06; // a little air around the framed graph
 
 // node label: full name above the sphere, life dates below it
 function makeNodeObject(n) {
@@ -169,6 +125,14 @@ function makeNodeObject(n) {
     dates.textHeight = 4.6;
     dates.position.y = -12;
     group.add(dates);
+  }
+  // How far the sphere and its labels reach around the node centre, so
+  // fitCamera can keep whole names in view rather than just the spheres.
+  n.extent = { ...NODE_EXTENT };
+  for (const s of group.children) {
+    n.extent.half = Math.max(n.extent.half, s.scale.x / 2);
+    n.extent.up = Math.max(n.extent.up, s.position.y + s.scale.y / 2);
+    n.extent.down = Math.max(n.extent.down, s.scale.y / 2 - s.position.y);
   }
   return group;
 }
@@ -216,10 +180,16 @@ function initTree() {
     // interaction
     .onNodeHover(handleNodeHover)
     .onNodeClick(handleNodeClick)
+    // Lay the graph out before the first frame, and stop once it has settled.
+    // The default never stops early and runs a full 15 s, and the camera
+    // frames everyone only when it stops, so until then the outer people
+    // sat off-screen.
+    .warmupTicks(200)
+    .d3AlphaMin(0.005)
     .onEngineStop(() => {
       if (fitRequested) {
         fitRequested = false;
-        fitCamera(0);
+        fitCamera(600);
       }
     });
 
@@ -266,7 +236,9 @@ function handleNodeClick(node) {
   );
 }
 
-// fit the graph into view using the simulation bounding box
+// Frames everyone, labels included, looking straight down the z axis. The
+// distance comes from the camera's field of view and the panel's shape, so a
+// tall narrow panel backs the camera off far enough for the widest names.
 function fitCamera(ms = 800) {
   if (!Graph) return;
   const nodes = Graph.graphData().nodes.filter((n) => n.x !== undefined);
@@ -274,15 +246,27 @@ function fitCamera(ms = 800) {
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (const n of nodes) {
-    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    const e = n.extent || NODE_EXTENT;
+    minX = Math.min(minX, n.x - e.half); maxX = Math.max(maxX, n.x + e.half);
+    minY = Math.min(minY, n.y - e.down); maxY = Math.max(maxY, n.y + e.up);
     minZ = Math.min(minZ, n.z); maxZ = Math.max(maxZ, n.z);
   }
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const cz = (minZ + maxZ) / 2;
-  const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
-  const dist = Math.min(1200, Math.max(220, size * 1.5 + 120));
+  const vp = document.getElementById('treeViewport');
+  const tan = Math.tan((Graph.camera().fov * Math.PI) / 360);
+  const aspect = vp.clientWidth / Math.max(1, vp.clientHeight);
+  // Each person needs the camera far enough back that their label fits the
+  // view at their own depth: someone nearer the camera needs more room.
+  let dist = 220;
+  for (const n of nodes) {
+    const e = n.extent || NODE_EXTENT;
+    const ahead = n.z - cz;
+    const across = (Math.abs(n.x - cx) + e.half) * FIT_MARGIN;
+    const upDown = Math.max(n.y + e.up - cy, cy - n.y + e.down) * FIT_MARGIN;
+    dist = Math.max(dist, across / (tan * aspect) + ahead, upDown / tan + ahead);
+  }
   Graph.cameraPosition({ x: cx, y: cy, z: cz + dist }, { x: cx, y: cy, z: cz }, ms);
 }
 
@@ -311,7 +295,6 @@ function renderChart() {
   chart = FamilyChart.render(document.getElementById('treeChart'), {
     people,
     marriages,
-    levels: generationLevels(),
     nameOf: fullName,
     labelOf: (p) => ({
       surname: p.maidenName
@@ -320,9 +303,10 @@ function renderChart() {
       given: [p.firstName, p.middleName].filter(Boolean).join(' '),
     }),
     datesOf: lifeDates,
+    deceasedOf: isDeceased,
     placeOf: (p) => p.birthPlace || '',
     noteOf: (p) => p.notes || '',
-    labels: { marriage: t('marriage.title'), divorced: t('chip.exSpouse') },
+    labels: { marriage: t('marriage.title'), divorced: t('chip.exSpouse'), failed: t('chart.failed') },
     focusId: focused ? focused.id : null,
     selectedId: null,
     onPick: (id) => {
@@ -346,10 +330,11 @@ function renderTree() {
   document.getElementById('treeChart').textContent = '';
   if (!Graph) initTree();
   sizeTree(); // the container had no width while the chart was showing
-  Graph.graphData(graphDataFromPeople());
-  // physics: charge adapts to the node count
+  // physics: charge adapts to the node count. Set before the data, because
+  // graphData() runs the warm-up ticks with whatever is set.
   Graph.d3Force('charge').strength(-260 * Math.sqrt(Math.max(1, people.length) / 100));
   Graph.d3Force('link').distance(110);
+  Graph.graphData(graphDataFromPeople());
 }
 
 // View switch. Like the language button, it shows what you get by clicking:

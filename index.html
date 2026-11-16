@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Семейное древо</title>
-<link rel="stylesheet" href="styles.css?v=24">
+<link rel="stylesheet" href="styles.css?v=31">
 </head>
 <body>
 <div class="app">
@@ -16,7 +16,7 @@
     <div class="card form-card">
       <h2 id="formTitle">Новый человек</h2>
       <form id="personForm" autocomplete="off">
-        <div class="field-row">
+        <div class="field-row field-row-names">
           <label><span data-i18n="form.lastName">Фамилия</span>
             <input type="text" id="lastName" data-i18n-ph="ph.lastName" placeholder="Иванов">
           </label>
@@ -131,6 +131,11 @@
         <div class="form-actions">
           <button type="submit" id="submitBtn" class="btn btn-primary">Добавить</button>
           <button type="button" id="cancelBtn" class="btn btn-ghost hidden" data-i18n="form.cancel">Отмена</button>
+          <label class="switch-label" data-i18n-title="form.deceasedTitle" title="Отметьте, если человек умер, а дата неизвестна">
+            <input type="checkbox" id="deceasedToggle" class="switch-input">
+            <span class="switch-slider"></span>
+            <span data-i18n="form.deceased">Умер(ла)</span>
+          </label>
           <label class="switch-label">
             <input type="checkbox" id="focusToggle" class="switch-input">
             <span class="switch-slider"></span>
@@ -142,7 +147,19 @@
 
     <!-- People list -->
     <div class="card list-card">
-      <h2><span data-i18n="table.all">Все люди</span> <span id="peopleCount" class="counter"></span></h2>
+      <div class="card-head">
+        <h2><span data-i18n="table.all">Все люди</span> <span id="peopleCount" class="counter"></span></h2>
+        <div class="card-tools">
+          <input type="search" id="peopleSearch" class="search" data-i18n-ph="table.search"
+            data-i18n-title="table.searchTitle" placeholder="Поиск"
+            title="Фамилия, девичья фамилия, имя или отчество">
+          <button type="button" id="downloadBtn" class="btn btn-tool btn-lang" data-i18n="data.download"
+            data-i18n-title="data.downloadTitle" title="Скачать всё древо одним JSON-файлом">Скачать</button>
+          <button type="button" id="importBtn" class="btn btn-tool btn-lang" data-i18n="data.import"
+            data-i18n-title="data.importTitle" title="Заменить древо данными из JSON-файла">Загрузить</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
+        </div>
+      </div>
       <div class="table-wrap">
         <table id="peopleTable">
           <thead>
@@ -153,6 +170,7 @@
               <th data-i18n="table.middleName">Отчество</th>
               <th data-i18n="table.gender">Пол</th>
               <th data-key="birthDate" class="sortable"><span data-i18n="table.birth">Рождение</span> <span class="arrow"></span></th>
+              <th data-i18n="table.age">Возраст</th>
               <th data-key="birthPlace" class="sortable"><span data-i18n="table.birthPlace">Место</span> <span class="arrow"></span></th>
               <th data-key="deathDate" class="sortable"><span data-i18n="table.death">Смерть</span> <span class="arrow"></span></th>
               <th data-i18n="table.status">Статус</th>
@@ -167,11 +185,13 @@
 
   <!-- RIGHT PANEL: tree -->
   <section class="right">
+    <div id="splitter" class="splitter" role="separator" aria-orientation="vertical"
+      data-i18n-title="app.splitter" title="Потяните, чтобы поменять ширину панелей. Двойной клик вернёт поровну"></div>
     <button id="collapseTab" class="collapse-tab" data-i18n-title="tree.hidePanel" title="Скрыть панель">‹</button>
     <div class="card tree-card">
-      <div class="tree-toolbar">
+      <div class="card-head">
         <h2 data-i18n="tree.title">Древо</h2>
-        <div class="tree-controls">
+        <div class="card-tools">
           <button id="viewToggle" class="btn btn-tool btn-lang" title="Разложить по поколениям">Древо</button>
           <button id="langToggle" class="btn btn-tool btn-lang" data-i18n-title="app.langNext" title="Switch to English">EN</button>
           <button id="zoomOut" class="btn btn-tool" data-i18n-title="tree.zoomOut" title="Отдалить">−</button>
@@ -190,8 +210,8 @@
 </div>
 <div id="serverWarning" class="server-warning hidden"></div>
 <script src="vendor/graph-bundle.js"></script>
-<script src="i18n.js?v=5"></script>
-<script src="chart.js?v=11"></script>
-<script src="app.js?v=40"></script>
+<script src="i18n.js?v=11"></script>
+<script src="chart.js?v=20"></script>
+<script src="app.js?v=49"></script>
 </body>
 </html>
